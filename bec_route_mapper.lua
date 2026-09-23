@@ -1,5 +1,6 @@
 local component = require("component")
 local computer = require("computer")
+local componentResolver = require("bec_component_resolver")
 
 local configOk, config = pcall(require, "bec_route_mapper_config")
 if not configOk then
@@ -19,22 +20,10 @@ local function fail(message)
   error(message, 0)
 end
 
-local function trim(value)
-  return tostring(value or ""):match("^%s*(.-)%s*$")
-end
-
 local function resolveAddress(componentType, prefix, label)
-  prefix = trim(prefix)
-  local matches = {}
-  for address in component.list(componentType, true) do
-    if prefix ~= "" and address:sub(1, #prefix) == prefix then
-      matches[#matches + 1] = address
-    end
-  end
-  table.sort(matches)
-  if #matches == 0 then fail(label .. " not found: " .. prefix) end
-  if #matches > 1 then fail(label .. " address is ambiguous: " .. table.concat(matches, ",")) end
-  return matches[1]
+  local address, problem = componentResolver.resolve(componentType, prefix)
+  if address then return address end
+  fail(componentResolver.describe(problem, label, componentType))
 end
 
 local function bind(componentType, prefix, label, requiredMethods)

@@ -6,7 +6,7 @@ local function alignedCache(mebibytes, unit)
 end
 
 return {
-  schemaVersion = 10,
+  schemaVersion = 11,
   -- BEC机器地址。使用适配器连接（可用MFU避免机器正面被遮挡）
   -- storageAddress  约束场
   -- gateAddress     麦克斯韦磁通门
@@ -41,6 +41,38 @@ return {
     haltSide = sides.west,
     connectSignal = 15,
     disconnectSignal = 0,
+  },
+
+  -- 纳米蜂群转运。该链路使用一条 ME 存储总线矿典过滤、独立回收红石
+  -- I/O 和 transposer 槽位确认；controllerNodeAddress 是全局需求/供应节点。
+  nanite = {
+    enabled = true,
+    controllerNodeAddress = "",
+    storageBusAddress = "",
+    inputSide = sides.down,
+    ejectRedstoneAddress = "",
+    ejectSide = sides.west,
+    transposerAddress = "",
+    targetSide = sides.down,
+    targetOutputSlot = 3,
+    activeSignal = 15,
+    inactiveSignal = 0,
+    ejectTimeout = 10,
+    supplyTimeout = 30,
+    poll = 0.5,
+    enableCache = false,
+    oreByTier = {
+      [1] = "naniteCarbon",
+      [2] = "naniteSilver",
+      [3] = "naniteGold",
+      [4] = "naniteTranscendentMetal",
+      [5] = "naniteSixPhasedCopper",
+      [6] = "naniteWhiteDwarfMatter",
+      [7] = "naniteBlackDwarfMatter",
+      [8] = "naniteUniversium",
+      [9] = "naniteEternity",
+      [10] = "naniteMagmatter",
+    },
   },
 
   -- 流体自动补充相关配置

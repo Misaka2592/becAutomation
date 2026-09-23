@@ -1,5 +1,10 @@
 local component = require("component")
 local computer = require("computer")
+local naniteTransfer = require("bec_nanite_transfer")
+local componentResolver = require("bec_component_resolver")
+local fieldStrengthCalculator = require("bec_field_strength")
+local counterModule = require("bec_counter")
+local diagnostics = require("bec_diagnostics")
 
 local REFILL_PULSE_DURATION = 1
 local REFILL_PULSE_INTERVAL = 1
@@ -22,6 +27,11 @@ local haltRedstone
 local refillCache
 local refillLinkRedstone
 local refillActivityRedstone
+local naniteStorageBus
+local naniteEjectRedstone
+local naniteTransposer
+local naniteControllerNode
+local naniteController
 local refillRoutes = {}
 local routeConfig
 local nodes = {}
@@ -34,6 +44,7 @@ local dashboard
 local dashboardPaused = false
 local processedRecipeTotal = 0
 local processedRecipeFile
+local recipeCounter
 local haltLatched = false
 local haltInterlockActive = false
 
@@ -124,104 +135,18 @@ local function formatInteger(value)
   return text
 end
 
-local function readProcessedRecipeFile(path)
-  local handle, reason = io.open(path, "r")
-  if not handle then return nil, "missing", reason end
-  local contents = handle:read("*a")
-  handle:close()
-  local text = contents and contents:match("^BEC_PROCESSED_V1 (%d+)\n$")
-  local value = tonumber(text)
-  if not isInteger(value) then return nil, "invalid", "invalid counter contents" end
-  return value
-end
-
-local function writeProcessedRecipeFile(path, contents)
-  local handle, reason = io.open(path, "w")
-  if not handle then return nil, reason end
-  local wrote, writeReason = handle:write(contents)
-  if not wrote then
-    pcall(handle.close, handle)
-    return nil, writeReason
-  end
-  local flushed, flushReason = handle:flush()
-  if not flushed then
-    pcall(handle.close, handle)
-    return nil, flushReason
-  end
-  -- OpenOS filesystem close succeeds without a return value.
-  local closed, closeReason = pcall(handle.close, handle)
-  if not closed then return nil, closeReason end
-  return true
-end
-
 local function loadProcessedRecipeTotal()
-  local primary, primaryState, primaryReason = readProcessedRecipeFile(processedRecipeFile)
-  local backup, backupState, backupReason = readProcessedRecipeFile(processedRecipeFile .. ".bak")
-  if primary or backup then
-    processedRecipeTotal = math.max(primary or 0, backup or 0)
-    if primaryState == "invalid" or backupState == "invalid" then
-      log("WARN", "recovered processed recipe total from the valid counter copy")
-    end
-  elseif primaryState == "missing" and backupState == "missing" then
-    processedRecipeTotal = 0
-  else
-    fail(string.format(
-      "processed recipe counter is unreadable: primary=%s backup=%s",
-      tostring(primaryReason),
-      tostring(backupReason)
-    ))
-  end
-  uiUpdate({ processedRecipeTotal = processedRecipeTotal }, true)
-  log("INFO", "processed recipe total=" .. formatInteger(processedRecipeTotal))
+  processedRecipeTotal = recipeCounter:load()
 end
 
 local function saveProcessedRecipeTotal()
-  local contents = string.format("BEC_PROCESSED_V1 %.0f\n", processedRecipeTotal)
-  local primary = readProcessedRecipeFile(processedRecipeFile)
-  local backup = readProcessedRecipeFile(processedRecipeFile .. ".bak")
-  local firstPath = processedRecipeFile
-  local secondPath = processedRecipeFile .. ".bak"
-  if (backup or -1) < (primary or -1) then
-    firstPath, secondPath = secondPath, firstPath
-  end
-
-  local firstOk, firstReason = writeProcessedRecipeFile(firstPath, contents)
-  if not firstOk then return nil, firstPath .. ": " .. tostring(firstReason) end
-  local secondOk, secondReason = writeProcessedRecipeFile(secondPath, contents)
-  if not secondOk then
-    return true, secondPath .. " write failed; the other counter copy is current: "
-      .. tostring(secondReason)
-  end
-  return true
+  return recipeCounter:save(processedRecipeTotal)
 end
 
 local function resolveAddress(componentType, prefix, label)
-  prefix = trim(prefix)
-  local available = {}
-  local matches = {}
-
-  for address in component.list(componentType, true) do
-    available[#available + 1] = address
-    if prefix == "" or address:sub(1, #prefix) == prefix then
-      matches[#matches + 1] = address
-    end
-  end
-  table.sort(available)
-  table.sort(matches)
-
-  if #matches == 0 then
-    fail(string.format(
-      "%s (%s) not found; prefix=%s; available=%s",
-      label,
-      componentType,
-      prefix ~= "" and prefix or "<auto>",
-      #available > 0 and table.concat(available, ",") or "none"
-    ))
-  end
-  if #matches > 1 then
-    fail(label .. " address is ambiguous: " .. table.concat(matches, ","))
-  end
-  return matches[1]
+  local address, problem = componentResolver.resolve(componentType, prefix, { allowEmpty = true })
+  if address then return address end
+  fail(componentResolver.describe(problem, label, componentType, { includeAvailable = true }))
 end
 
 local function bindAddress(address, componentType, label, requiredMethods)
@@ -250,7 +175,7 @@ local function bindOne(componentType, prefix, label, requiredMethods)
 end
 
 local function validateConfig()
-  if config.schemaVersion ~= 10 then
+  if config.schemaVersion ~= 11 then
     fail(
       "bec_automation_config.lua is outdated or does not match this program; "
         .. "copy the current config file together with bec_automation.lua"
@@ -263,6 +188,16 @@ local function validateConfig()
     fail("ui.processedRecipeFile must be a non-empty path")
   end
   processedRecipeFile = trim(uiConfig.processedRecipeFile or "/home/bec_processed_recipes.dat")
+  recipeCounter = counterModule.new({
+    path = processedRecipeFile,
+    isInteger = isInteger,
+    formatInteger = formatInteger,
+    log = log,
+    update = function(value)
+      processedRecipeTotal = value
+      uiUpdate({ processedRecipeTotal = value }, true)
+    end,
+  })
   local buffers = config.buffers or {}
   for _, entry in ipairs({
     { name = "buffers.itemInterfaceAddress", value = buffers.itemInterfaceAddress },
@@ -271,6 +206,57 @@ local function validateConfig()
   }) do
     if type(entry.value) ~= "string" or trim(entry.value) == "" then
       fail(entry.name .. " must be a non-empty string")
+    end
+  end
+
+  local naniteConfig = config.nanite or {}
+  if naniteConfig.enabled ~= false then
+    for _, entry in ipairs({
+      { name = "nanite.controllerNodeAddress", value = naniteConfig.controllerNodeAddress },
+      { name = "nanite.storageBusAddress", value = naniteConfig.storageBusAddress },
+      { name = "nanite.ejectRedstoneAddress", value = naniteConfig.ejectRedstoneAddress },
+      { name = "nanite.transposerAddress", value = naniteConfig.transposerAddress },
+    }) do
+      if type(entry.value) ~= "string" or trim(entry.value) == "" then
+        fail(entry.name .. " must be a component address or unique prefix")
+      end
+    end
+    for _, entry in ipairs({
+      { name = "nanite.inputSide", value = naniteConfig.inputSide },
+      { name = "nanite.ejectSide", value = naniteConfig.ejectSide },
+      { name = "nanite.targetSide", value = naniteConfig.targetSide },
+    }) do
+      if not isInteger(entry.value) or entry.value > 5 then
+        fail(entry.name .. " must be a side number from 0 to 5")
+      end
+    end
+    if not isInteger(naniteConfig.targetOutputSlot) or naniteConfig.targetOutputSlot < 1 then
+      fail("nanite.targetOutputSlot must be a positive integer")
+    end
+    for _, entry in ipairs({
+      { name = "nanite.activeSignal", value = naniteConfig.activeSignal },
+      { name = "nanite.inactiveSignal", value = naniteConfig.inactiveSignal },
+    }) do
+      if not isInteger(entry.value) or entry.value > 15 then
+        fail(entry.name .. " must be an integer from 0 to 15")
+      end
+    end
+    if naniteConfig.activeSignal == naniteConfig.inactiveSignal then
+      fail("nanite.activeSignal and nanite.inactiveSignal must be different")
+    end
+    for _, name in ipairs({ "poll", "ejectTimeout", "supplyTimeout" }) do
+      if type(naniteConfig[name]) ~= "number" or naniteConfig[name] <= 0 then
+        fail("nanite." .. name .. " must be a positive number")
+      end
+    end
+    if type(naniteConfig.oreByTier) ~= "table" then
+      fail("nanite.oreByTier must be a table")
+    end
+    for tier = 1, 10 do
+      if type(naniteConfig.oreByTier[tier]) ~= "string"
+          or trim(naniteConfig.oreByTier[tier]) == "" then
+        fail("nanite.oreByTier is missing tier " .. tier)
+      end
     end
   end
   local redstoneConfig = config.redstone or {}
@@ -470,6 +456,36 @@ local function bindComponents()
   haltRedstone = bindOne("redstone", config.redstone.haltAddress, "HALT redstone I/O", {
     "getOutput", "setOutput",
   })
+  local naniteConfig = config.nanite or {}
+  if naniteConfig.enabled ~= false then
+    naniteStorageBus = bindOne(
+      "me_storagebus",
+      naniteConfig.storageBusAddress,
+      "nanite storage bus",
+      {}
+    )
+    if not (naniteStorageBus.setStorageOreFilter or naniteStorageBus.setStorage0reFilter) then
+      fail("nanite storage bus does not expose setStorageOreFilter or setStorage0reFilter")
+    end
+    naniteEjectRedstone = bindOne(
+      "redstone",
+      naniteConfig.ejectRedstoneAddress,
+      "nanite eject redstone I/O",
+      { "getOutput", "setOutput" }
+    )
+    naniteTransposer = bindOne(
+      "transposer",
+      naniteConfig.transposerAddress,
+      "nanite output transposer",
+      { "getStackInSlot" }
+    )
+    naniteControllerNode = bindOne(
+      "bec_io_node",
+      naniteConfig.controllerNodeAddress,
+      "nanite controller BEC I/O node",
+      { "getRequiredTier", "getProvidedTier" }
+    )
+  end
   local fixedOutputs = {}
   for _, output in ipairs({
     { address = nodeRedstone.address, side = config.redstone.nodeToggleSide, label = "material/item-cache output" },
@@ -480,6 +496,11 @@ local function bindComponents()
     local key = output.address .. ":" .. output.side
     if fixedOutputs[key] then fail(output.label .. " overlaps " .. fixedOutputs[key]) end
     fixedOutputs[key] = output.label
+  end
+  if naniteEjectRedstone then
+    local key = naniteEjectRedstone.address .. ":" .. naniteConfig.ejectSide
+    if fixedOutputs[key] then fail("nanite eject output overlaps " .. fixedOutputs[key]) end
+    fixedOutputs[key] = "nanite eject output"
   end
 
   if (config.refill or {}).enabled then
@@ -507,6 +528,9 @@ local function bindComponents()
     claimOutput(generatorRedstone.address, config.redstone.generatorToggleSide, "material/fluid-cache output")
     claimOutput(synthesisRedstone.address, config.redstone.synthesisSide, "synthesis-active output")
     claimOutput(haltRedstone.address, config.redstone.haltSide, "HALT output")
+    if naniteEjectRedstone then
+      claimOutput(naniteEjectRedstone.address, naniteConfig.ejectSide, "nanite eject output")
+    end
     claimOutput(refillLinkRedstone.address, refill.entanglerToggleSide, "automatic-refill/entangler toggle bus")
     local function bindRouteOutput(definition, label)
       if type(definition.address) ~= "string"
@@ -542,9 +566,16 @@ local function bindComponents()
   if #configured > 0 then
     for index, prefix in ipairs(configured) do
       addresses[index] = resolveAddress("bec_io_node", prefix, "BEC I/O node " .. index)
+      if naniteControllerNode and addresses[index] == naniteControllerNode.address then
+        fail("nanite controller BEC I/O node cannot also be a worker node")
+      end
     end
   else
-    for address in component.list("bec_io_node", true) do addresses[#addresses + 1] = address end
+    for address in component.list("bec_io_node", true) do
+      if not naniteControllerNode or address ~= naniteControllerNode.address then
+        addresses[#addresses + 1] = address
+      end
+    end
     table.sort(addresses)
   end
   if #addresses ~= nodeConfig.expectedCount then
@@ -565,6 +596,18 @@ local function bindComponents()
   local filterCount = tonumber(checked("get filter count", gate.getCondensateFilterCount)) or 0
   if filterCount < #config.fluids then
     fail(string.format("Maxwell gate has %d filter slots, but %d fluids are configured", filterCount, #config.fluids))
+  end
+  if naniteStorageBus then
+    naniteController = naniteTransfer.new({
+      config = naniteConfig,
+      storageBus = naniteStorageBus,
+      ejectRedstone = naniteEjectRedstone,
+      transposer = naniteTransposer,
+      controllerNode = naniteControllerNode,
+      now = now,
+      log = log,
+      isHalted = function() return haltInterlockActive end,
+    })
   end
 end
 
@@ -681,6 +724,21 @@ local function setSafeIdleFieldStrength(stored, label)
   checked(label or "set safe idle field strength", storage.setFieldStrength, strength)
   uiUpdate({ fieldStrength = strength })
   return strength
+end
+
+local function reserveFieldStrength(activeFieldStrength, storedTotal, reservation, label)
+  local requiredFieldStrength = fieldStrengthCalculator.required(
+    activeFieldStrength,
+    baselineFieldStrength,
+    refillFieldStrengthFloor,
+    storedTotal,
+    reservation
+  )
+  if requiredFieldStrength > activeFieldStrength then
+    checked(label, storage.setFieldStrength, requiredFieldStrength)
+    uiUpdate({ fieldStrength = requiredFieldStrength })
+  end
+  return requiredFieldStrength
 end
 
 local function assertBaselineIsSafe(stored)
@@ -1530,6 +1588,12 @@ local function applyCondensateFaultStop(phase, detail, states, parallel)
   end
   attempt("disable material/item-cache output", function() setNodeNetwork(false) end)
   attempt("disable material/fluid-cache output", function() setOrderFluidTransfer(false) end)
+  if naniteController then
+    attempt("disable nanite storage-bus input", function()
+      local ok, reason = naniteController:reset()
+      if not ok then fail(reason or "nanite reset failed") end
+    end)
+  end
   if (config.refill or {}).enabled then
     for _, entry in ipairs(config.fluids) do
       local route = refillRoutes[entry.source]
@@ -1542,6 +1606,34 @@ local function applyCondensateFaultStop(phase, detail, states, parallel)
   attempt("hold synthesis-active output", function() setSynthesisActive(true) end)
 
   return stopErrors
+end
+
+local function resumeAfterHalt()
+  -- Keep local machines disabled while the external interlock is released.
+  -- The nanite controller intentionally refuses work while haltInterlockActive
+  -- is true, so it must be re-armed after the HALT output is cleared.
+  setMachinesAllowed(false)
+  setHaltOutput(false)
+
+  if naniteController then
+    local naniteOk, naniteReason = naniteController:ensureCurrent(true)
+    if not naniteOk then
+      pcall(setHaltOutput, true)
+      fail("nanite resume failed: " .. tostring(naniteReason))
+    end
+  end
+
+  setMachinesAllowed(true)
+end
+
+local function haltForNaniteFailure(reason, states, parallel)
+  haltLatched = true
+  local detail = "Nanite transfer failed: " .. tostring(reason)
+  local stopErrors = applyCondensateFaultStop("HALT", detail, states or {}, parallel or 0)
+  log("ERROR", detail)
+  for _, message in ipairs(stopErrors) do log("ERROR", "HALT shutdown failure: " .. message) end
+  uiUpdate({ phase = "HALT", detail = detail, haltActive = true }, true)
+  fail(detail)
 end
 
 local function haltForCondensateShortage(
@@ -1619,12 +1711,7 @@ local function haltForCondensateShortage(
       end
       refillFieldStrengthFloor = math.max(refillFieldStrengthFloor, activeFieldStrength)
 
-      local resumeOk, resumeReason = xpcall(function()
-        -- Enable the local machines while the external interlock is still
-        -- asserted, then release HALT as the final resume action.
-        setMachinesAllowed(true)
-        setHaltOutput(false)
-      end, debug.traceback)
+      local resumeOk, resumeReason = xpcall(resumeAfterHalt, debug.traceback)
       if resumeOk then
         haltLatched = false
         uiPhase("RUNNING", "HALT inventory requirement satisfied; nodes resumed")
@@ -1719,17 +1806,14 @@ local function recoverCondensateShortage(
     and snapshot.fluidSignature ~= alreadyPulsedFluidSignature
   if shouldPulseRecoveryFluid then
     local reservation = snapshot.fluidTotal
-    local requiredFieldStrength = math.max(
+    local previousFieldStrength = activeFieldStrength
+    activeFieldStrength = reserveFieldStrength(
       activeFieldStrength,
-      baselineFieldStrength,
-      refillFieldStrengthFloor,
-      sumValues(stored) + reservation,
-      activeFieldStrength + reservation
+      sumValues(stored),
+      reservation,
+      "raise field strength for HALT recovery fluids"
     )
-    if requiredFieldStrength > activeFieldStrength then
-      activeFieldStrength = requiredFieldStrength
-      checked("raise field strength for HALT recovery fluids", storage.setFieldStrength, activeFieldStrength)
-      uiUpdate({ fieldStrength = activeFieldStrength })
+    if activeFieldStrength > previousFieldStrength then
       log("INFO", "field strength raised for HALT recovery fluids="
         .. formatInteger(activeFieldStrength))
     end
@@ -1856,10 +1940,7 @@ local function recoverCondensateShortage(
   end
   refillFieldStrengthFloor = math.max(refillFieldStrengthFloor, activeFieldStrength)
 
-  local resumeOk, resumeReason = xpcall(function()
-    setMachinesAllowed(true)
-    setHaltOutput(false)
-  end, debug.traceback)
+  local resumeOk, resumeReason = xpcall(resumeAfterHalt, debug.traceback)
   if not resumeOk then
     activeFieldStrength = haltForCondensateShortage(
       activeFieldStrength,
@@ -1901,6 +1982,12 @@ local function waitForNodeCompletion(activeFieldStrength, acceptedOrderCount)
     local stored = getStoredCondensate()
     local storedTotal = sumValues(stored)
     local idle, states, parallel, remainingCondensate = allNodesIdle()
+    if naniteController and parallel > 0 then
+      local naniteOk, naniteReason = naniteController:ensureCurrent(true)
+      if not naniteOk then
+        haltForNaniteFailure(naniteReason, states, parallel)
+      end
+    end
     if parallel > 0 then
       local shortages = getDeficits(remainingCondensate, stored)
       if next(shortages) then
@@ -1965,21 +2052,14 @@ local function waitForNodeCompletion(activeFieldStrength, acceptedOrderCount)
           if hasAdditionalFluids and not fluidsAlreadyPulsed then
             getRequiredCondensate(snapshot.fluids)
             local reservation = snapshot.fluidTotal
-            local requiredFieldStrength = math.max(
+            local previousFieldStrength = activeFieldStrength
+            activeFieldStrength = reserveFieldStrength(
               activeFieldStrength,
-              baselineFieldStrength,
-              refillFieldStrengthFloor,
-              storedTotal + reservation,
-              activeFieldStrength + reservation
+              storedTotal,
+              reservation,
+              "raise field strength for appended next-order fluids"
             )
-            if requiredFieldStrength > activeFieldStrength then
-              activeFieldStrength = requiredFieldStrength
-              checked(
-                "raise field strength for appended next-order fluids",
-                storage.setFieldStrength,
-                activeFieldStrength
-              )
-              uiUpdate({ fieldStrength = activeFieldStrength })
+            if activeFieldStrength > previousFieldStrength then
               log("INFO", "field strength raised for appended next-order fluids="
                 .. formatInteger(activeFieldStrength))
             end
@@ -2018,21 +2098,14 @@ local function waitForNodeCompletion(activeFieldStrength, acceptedOrderCount)
       elseif now() - nextOrderStableSince >= config.timings.orderSettle then
         getRequiredCondensate(snapshot.fluids)
         local reservation = snapshot.fluidTotal
-        local requiredFieldStrength = math.max(
+        local previousFieldStrength = activeFieldStrength
+        activeFieldStrength = reserveFieldStrength(
           activeFieldStrength,
-          baselineFieldStrength,
-          refillFieldStrengthFloor,
-          storedTotal + reservation,
-          activeFieldStrength + reservation
+          storedTotal,
+          reservation,
+          "raise field strength for prefetched next order"
         )
-        if requiredFieldStrength > activeFieldStrength then
-          activeFieldStrength = requiredFieldStrength
-          checked(
-            "raise field strength for prefetched next order",
-            storage.setFieldStrength,
-            activeFieldStrength
-          )
-          uiUpdate({ fieldStrength = activeFieldStrength })
+        if activeFieldStrength > previousFieldStrength then
           log("INFO", "field strength raised for prefetched next order="
             .. formatInteger(activeFieldStrength))
         end
@@ -2069,22 +2142,12 @@ local function waitForNodeCompletion(activeFieldStrength, acceptedOrderCount)
       elseif now() - residualFluidStableSince >= config.timings.orderSettle then
         getRequiredCondensate(snapshot.fluids)
         local reservation = snapshot.fluidTotal
-        local requiredFieldStrength = math.max(
+        activeFieldStrength = reserveFieldStrength(
           activeFieldStrength,
-          baselineFieldStrength,
-          refillFieldStrengthFloor,
-          storedTotal + reservation,
-          activeFieldStrength + reservation
+          storedTotal,
+          reservation,
+          "raise field strength for fluid-only income"
         )
-        if requiredFieldStrength > activeFieldStrength then
-          activeFieldStrength = requiredFieldStrength
-          checked(
-            "raise field strength for fluid-only income",
-            storage.setFieldStrength,
-            activeFieldStrength
-          )
-          uiUpdate({ fieldStrength = activeFieldStrength })
-        end
         refillFieldStrengthFloor = math.max(refillFieldStrengthFloor, activeFieldStrength)
         transferOrderFluidsToBuffer("fluid-only income while order is active", snapshot.fluidTotal)
         lastResidualPulsedFluidSignature = snapshot.fluidSignature
@@ -2209,8 +2272,19 @@ local function processOrder(snapshot)
     configureNodes(orderCount)
   end
 
-  setMachinesAllowed(true)
+  -- Keep the BEC machines disabled while the item batch is staged and the
+  -- global nanite controller is supplied. The item pulse itself only moves
+  -- inventory into the node cache.
+  setMachinesAllowed(false)
   pulseNodeOrderTransfer(fingerprint, snapshot.itemTotal)
+  if naniteController then
+    uiPhase("PREPARING", "Supplying nanite swarm")
+    local naniteOk, naniteReason = naniteController:ensureCurrent(true)
+    if not naniteOk then
+      haltForNaniteFailure(naniteReason, { disabled = #nodes }, 0)
+    end
+  end
+  setMachinesAllowed(true)
   local nextSnapshot
   local completedOrderCount
   activeFieldStrength, nextSnapshot, completedOrderCount = waitForNodeCompletion(
@@ -2221,6 +2295,12 @@ local function processOrder(snapshot)
   setNodeNetwork(false)
   setMachinesAllowed(false)
   setOrderFluidTransfer(false)
+  if naniteController and not nextSnapshot then
+    local naniteOk, naniteReason = naniteController:idle()
+    if not naniteOk then
+      haltForNaniteFailure(naniteReason, { idle = #nodes }, 0)
+    end
+  end
   if not nextSnapshot then setSynthesisActive(false) end
   if nextSnapshot then
     log("INFO", "item cache empty and all nodes idle; next-order fluids prefetched")
@@ -2259,6 +2339,10 @@ end
 
 local function initializeSafeState()
   uiPhase("STARTING", "Applying safe machine state")
+  if naniteController then
+    local ok, reason = naniteController:idle()
+    if not ok then haltForNaniteFailure(reason, { disabled = #nodes }, 0) end
+  end
   local stored = getStoredCondensate()
   assertBaselineIsSafe(stored)
   assertBaselineStockPresent(stored)
@@ -2279,107 +2363,11 @@ local function initializeSafeState()
   reportBaselineStock()
 end
 
-local function discover()
-  for _, componentType in ipairs({
-    "bec_storage", "bec_diode", "bec_io_node", "me_interface", "redstone",
-  }) do
-    for address in component.list(componentType, true) do
-      local methods = component.methods(address) or {}
-      local names = {}
-      for method in pairs(methods) do names[#names + 1] = method end
-      table.sort(names)
-      print(componentType .. "  " .. address)
-      print("  methods=" .. table.concat(names, ","))
-    end
-  end
-end
-
-local function checkConfiguration()
-  print("Components found")
-  print("  storage=" .. storage.address)
-  print("  gate=" .. gate.address)
-  print("  material-cache=" .. cache.address .. " (" .. cache.type .. ")")
-  print("  item-cache=" .. itemCache.address .. " (" .. itemCache.type .. ")")
-  print("  fluid-cache=" .. fluidCache.address .. " (" .. fluidCache.type .. ")")
-  print("  node-redstone=" .. nodeRedstone.address .. " side=" .. config.redstone.nodeToggleSide)
-  print("  node-transfer-pulse=" .. tostring(config.timings.nodeTransferPulse) .. "s")
-  print("  order-fluid-transfer-redstone="
-    .. generatorRedstone.address .. " side=" .. config.redstone.generatorToggleSide)
-  print("  synthesis-active-redstone="
-    .. synthesisRedstone.address .. " side=" .. config.redstone.synthesisSide)
-  print("  synthesis-active-output=" .. tostring(checked(
-    "read synthesis-active output",
-    synthesisRedstone.getOutput,
-    config.redstone.synthesisSide
-  )))
-  print("  halt-redstone=" .. haltRedstone.address .. " side=" .. config.redstone.haltSide)
-  print("  halt-output=" .. tostring(checked(
-    "read HALT output",
-    haltRedstone.getOutput,
-    config.redstone.haltSide
-  )))
-  if (config.refill or {}).enabled then
-    print("  refill-cache=" .. refillCache.address .. " (" .. refillCache.type .. ")")
-    print("  refill-entangler-redstone=" .. refillLinkRedstone.address
-      .. " side=" .. config.refill.entanglerToggleSide)
-    print("  refill-entangler-activity-redstone=" .. refillActivityRedstone.address
-      .. " side=" .. config.refill.activitySide)
-    print("  refill-unused-route-output=" .. routeConfig.unusedOutput.address
-      .. " side=" .. routeConfig.unusedOutput.side .. " (kept off)")
-    print("  refill-fluid-config:")
-    for _, entry in ipairs(config.fluids) do
-      print(string.format(
-        "    %s target=%s rate=%s mB/s",
-        entry.source,
-        formatInteger(entry.target),
-        formatInteger(entry.outputPerSecond)
-      ))
-    end
-    print("  refill-staged-fluids=" .. formatInteger(sumValues(readRefillFluids())))
-    print("  refill-entangler-output=" .. tostring(checked(
-      "read automatic-refill/entangler output",
-      refillLinkRedstone.getOutput,
-      config.refill.entanglerToggleSide
-    )))
-    local entanglerActive, activitySignal = readEntanglerActivity()
-    print("  refill-entangler-activity=" .. (entanglerActive and "running" or "idle")
-      .. " signal=" .. tostring(activitySignal)
-      .. " threshold=" .. tostring(config.refill.activityThreshold))
-    local activeSources = {}
-    for _, entry in ipairs(config.fluids) do
-      local route = refillRoutes[entry.source]
-      local value = tonumber(checked(
-        "read refill source " .. entry.source,
-        route.device.getOutput,
-        route.side
-      )) or 0
-      if value ~= config.refill.disconnectSignal then
-        activeSources[#activeSources + 1] = entry.source .. "=" .. value
-      end
-    end
-    print("  active-refill-sources="
-      .. (#activeSources > 0 and table.concat(activeSources, ",") or "none"))
-  end
-  print("  nodes=" .. #nodes)
-  print("  baseline-field-strength=" .. formatInteger(baselineFieldStrength))
-  local currentStored = getStoredCondensate()
-  print("  current-condensate-stock=" .. formatInteger(sumValues(currentStored)))
-  assertBaselineIsSafe(currentStored)
-  assertBaselineStockPresent(currentStored)
-  local snapshot = readNetwork()
-  print("  material-cache-items=" .. formatInteger(snapshot.itemTotal))
-  print("  material-cache-fluids=" .. formatInteger(snapshot.fluidTotal))
-  print("  item-cache-items=" .. formatInteger(readItemCacheTotal()))
-  print("  fluid-cache-fluids=" .. formatInteger(readFluidCacheTotal()))
-  if hasCompleteOrder(snapshot) then
-    local count, fingerprint, divisor = getOrderCount(snapshot.items)
-    print(string.format("  pending-order=%d fingerprint=%s divisor=%d", count, fingerprint, divisor))
-    print("  required-condensate=" .. deficitText(getRequiredCondensate(snapshot.fluids)))
-  end
-  print("Configuration OK (read-only check)")
-end
-
 local function cleanup()
+  if controlsArmed and naniteController then
+    local ok, reason = naniteController:reset()
+    if not ok then log("ERROR", "nanite cleanup failed: " .. tostring(reason)) end
+  end
   if controlsArmed and nodeRedstone then
     pcall(setToggle, nodeRedstone, config.redstone.nodeToggleSide, "material/item-cache output", false)
   end
@@ -2413,7 +2401,7 @@ end
 local args = { ... }
 local command = args[1] or "run"
 if command == "discover" then
-  discover()
+  diagnostics.discover(component)
   return
 end
 
@@ -2421,7 +2409,46 @@ local ok, reason = xpcall(function()
   validateConfig()
   bindComponents()
   if command == "check" then
-    checkConfiguration()
+    diagnostics.check({
+      config = config,
+      storage = storage,
+      gate = gate,
+      cache = cache,
+      itemCache = itemCache,
+      fluidCache = fluidCache,
+      nodeRedstone = nodeRedstone,
+      generatorRedstone = generatorRedstone,
+      synthesisRedstone = synthesisRedstone,
+      haltRedstone = haltRedstone,
+      refillCache = refillCache,
+      refillLinkRedstone = refillLinkRedstone,
+      refillActivityRedstone = refillActivityRedstone,
+      naniteStorageBus = naniteStorageBus,
+      naniteEjectRedstone = naniteEjectRedstone,
+      naniteTransposer = naniteTransposer,
+      naniteControllerNode = naniteControllerNode,
+      naniteController = naniteController,
+      refillRoutes = refillRoutes,
+      routeConfig = routeConfig,
+      nodes = nodes,
+      baselineFieldStrength = baselineFieldStrength,
+      checked = checked,
+      fail = fail,
+      formatInteger = formatInteger,
+      sumValues = sumValues,
+      readRefillFluids = readRefillFluids,
+      readEntanglerActivity = readEntanglerActivity,
+      getStoredCondensate = getStoredCondensate,
+      assertBaselineIsSafe = assertBaselineIsSafe,
+      assertBaselineStockPresent = assertBaselineStockPresent,
+      readNetwork = readNetwork,
+      readItemCacheTotal = readItemCacheTotal,
+      readFluidCacheTotal = readFluidCacheTotal,
+      hasCompleteOrder = hasCompleteOrder,
+      getOrderCount = getOrderCount,
+      getRequiredCondensate = getRequiredCondensate,
+      deficitText = deficitText,
+    })
     return
   end
   if command ~= "run" and command ~= "once" then

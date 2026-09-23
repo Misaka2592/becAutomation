@@ -1,12 +1,13 @@
 local sides = require("sides")
 local automation = require("bec_automation_config")
+local nanite = automation.nanite or {}
 
 local expectedFluids = {}
 for _, entry in ipairs(automation.fluids or {}) do
   expectedFluids[#expectedFluids + 1] = entry.source
 end
 
-return {
+local result = {
   schemaVersion = 1,
 
   cacheInterfaceAddress = automation.refill.cacheInterfaceAddress,
@@ -82,3 +83,14 @@ return {
   outputFile = "/home/bec_fluid_routes.lua",
   partialOutputFile = "/home/bec_fluid_routes.partial.lua",
 }
+
+if nanite.enabled ~= false and type(nanite.ejectRedstoneAddress) == "string"
+    and nanite.ejectRedstoneAddress ~= "" then
+  result.protectedControls[#result.protectedControls + 1] = {
+    label = "nanite eject output",
+    address = nanite.ejectRedstoneAddress,
+    side = nanite.ejectSide,
+  }
+end
+
+return result

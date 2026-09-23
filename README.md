@@ -18,9 +18,14 @@
 | `bec_automation.lua` | 主程序和状态机 | 否 |
 | `bec_dashboard.lua` | 100x30 GPU 状态面板 | 否 |
 | `bec_automation_config.lua` | 机器、AE 接口、固定红石 I/O、流体目标和配方计数配置 | 是 |
+| `bec_nanite_transfer.lua` | 矿典存储总线纳米蜂群过滤、回收和供应状态机 | 否 |
 | `bec_route_mapper.lua` | 自动识别 19 种补货流体对应的红石 I/O 和方向 | 否 |
 | `bec_route_mapper_config.lua` | 路由映射器的 10 个候选红石 I/O | 是 |
 | `bec_fluid_routes.lua` | 路由映射器生成的“流体 -> 红石 I/O/方向”结果 | 自动生成 |
+| `bec_component_resolver.lua` | 主程序和路由映射器共用的组件地址解析模块 | 否 |
+| `bec_field_strength.lua` | 订单、预取和恢复路径共用的场强预留计算模块 | 否 |
+| `bec_counter.lua` | 已处理配方计数的双副本读写模块 | 否 |
+| `bec_diagnostics.lua` | `discover` 和 `check` 的只读诊断输出模块 | 否 |
 
 ## 基本原理
 
@@ -53,6 +58,18 @@
 | 自动补货流体缓存 | `refill.cacheInterfaceAddress` | 空闲时按流体逐路向纠缠装置补货 |
 
 物料网络向两个目标网络是主动整批输出。一次 1 秒脉冲表示“发送当前网络中该类物料”，目标网络不会被物料网络回读。因此程序分别读取三个 ME 接口来判断原料、物品缓存和流体缓存的真实状态。
+
+### 纳米蜂群转运
+
+纳米蜂群不使用订单物品的 ME 整批脉冲。主程序使用一条独立的 `me_storagebus`、一个回收红石 I/O 和一个 `transposer`：
+
+1. 将存储总线矿典过滤设置为 `null`，禁止继续输入；
+2. 输出回收红石高电平，轮询 transposer 的目标槽位直到清空；
+3. 将过滤切换为当前全局 `requiredTier` 对应的矿辞；
+4. 等待全局控制节点的 `providedTier` 精确匹配；
+5. 供应完成后再次将矿辞设置为 `null`。
+
+`nodeTransferPulse` 仍然只负责订单物品从物料网络进入节点缓存。纳米链路由 `bec_nanite_transfer.lua` 独立管理。回收超时、供应超时、未知等级或组件调用失败都会保持矿辞关闭，并进入现有 HALT 联锁。
 
 ### 一单订单的处理顺序
 
@@ -176,10 +193,24 @@
 | `redstone.generatorAddress` | `generatorToggleSide` | 输出 | 物料原料网络 -> 纠缠装置流体缓存，整批流体 1 秒脉冲 |
 | `redstone.synthesisAddress` | `synthesisSide` | 输出 | 本单开始到安全结束期间保持高电平 |
 | `redstone.haltAddress` | `haltSide` | 输出 | `RECOVERING/HALT` 联锁；必须实际暂停蜂群/观测阵列 |
+| `nanite.ejectRedstoneAddress` | `nanite.ejectSide` | 输出 | 纳米蜂群收容总线回收脉冲；与 HALT 输出分开 |
 | `refill.entanglerAddress` | `entanglerToggleSide` | 输出 | 自动补货缓存 -> 纠缠装置的 AE 路径总控 |
 | `refill.activityAddress` | `activitySide` | 输入 | 纠缠装置正在工作时为高电平 |
 
 纠缠装置活动输入可使用无线活跃探测盖板汇总：配置为机器工作时发出信号，并接到 `activityAddress` 指定的一面。程序在该信号为高时不会仅靠固定延迟判定转换超时。
+
+### 纳米蜂群硬件
+
+`bec_automation_config.lua` 的 `nanite` 段需要填写：
+
+- `controllerNodeAddress`：提供全局 `getRequiredTier()` / `getProvidedTier()` 的 BEC I/O Node；
+- `storageBusAddress` 和 `inputSide`：纳米物品存储总线及其矿典过滤方向；
+- `ejectRedstoneAddress` 和 `ejectSide`：连接收容总线弹出机构的独立红石 I/O；
+- `transposerAddress`、`targetSide`、`targetOutputSlot`：用于确认收容总线输出槽清空。
+
+凝聚态不足触发 HALT 时，程序先把纳米过滤设为 `null` 并保留现有 HALT 联锁；恢复时先保持麦克斯韦门和观测节点禁止工作，释放 HALT，再重新读取需求等级并供应蜂群，确认供应成功后才允许机器工作。纳米供应失败会重新进入 HALT。
+
+默认方向与 `becV0.6.2.lua` 一致：存储总线 `down`、回收红石 `west`、transposer `down`、槽位 `3`。使用 `discover` 查找完整地址后再运行 `check`。
 
 ### 补货路由红石 I/O
 
@@ -197,15 +228,20 @@
 
 ### 1. 复制程序
 
-将本目录六个 `.lua` 文件复制到 OC 电脑的 `/home`：
+将本目录十一个 `.lua` 文件复制到 OC 电脑的 `/home`：
 
 ```text
 /home/bec_automation.lua
 /home/bec_dashboard.lua
 /home/bec_automation_config.lua
+/home/bec_nanite_transfer.lua
 /home/bec_route_mapper.lua
 /home/bec_route_mapper_config.lua
 /home/bec_fluid_routes.lua
+/home/bec_component_resolver.lua
+/home/bec_field_strength.lua
+/home/bec_counter.lua
+/home/bec_diagnostics.lua
 ```
 
 保留原文件名，因为程序使用 `require()` 按这些名称加载模块。
@@ -218,7 +254,7 @@
 bec_automation.lua discover
 ```
 
-输出会列出 `bec_storage`、`bec_diode`、`bec_io_node`、`me_interface` 和 `redstone` 的地址及方法。
+输出会列出 `bec_storage`、`bec_diode`、`bec_io_node`、`me_interface`、`me_storagebus`、`transposer` 和 `redstone` 的地址及方法。
 
 
 ### 3. 编辑主配置
@@ -237,6 +273,11 @@ bec_automation.lua discover
 | `refill.entanglerAddress` / `entanglerToggleSide` | 自动补货到纠缠装置的 AE 路径总控 |
 | `refill.activityAddress` / `activitySide` | 纠缠装置活动信号输入 |
 | `nodes.addresses` | 可留空自动发现；同一 OC 网络有额外 BEC 节点时应显式填写 16 个地址 |
+| `nanite.enabled` | 是否启用矿典存储总线纳米蜂群链路；启用后必须填写下列纳米组件地址 |
+| `nanite.controllerNodeAddress` | 全局纳米需求/供应 BEC I/O Node 地址 |
+| `nanite.storageBusAddress` / `inputSide` | 矿典存储总线地址和过滤方向 |
+| `nanite.ejectRedstoneAddress` / `ejectSide` | 独立蜂群回收红石 I/O 地址和方向 |
+| `nanite.transposerAddress` / `targetSide` / `targetOutputSlot` | 回收完成检测的 transposer 和槽位 |
 
 方向使用 `sides.east`、`sides.west`、`sides.north`、`sides.south`、`sides.up` 或 `sides.down`，并以红石 I/O 自身坐标方向为准。
 
