@@ -57,13 +57,11 @@ function M.new(options)
     lastRequirementChange = false,
   }
 
-  local poll = tonumber(config.poll) or 0.5
-  local ejectTimeout = tonumber(config.ejectTimeout) or 10
-  local supplyTimeout = tonumber(config.supplyTimeout) or 30
-  local activeSignal = config.activeSignal
-  if activeSignal == nil then activeSignal = 15 end
-  local inactiveSignal = config.inactiveSignal
-  if inactiveSignal == nil then inactiveSignal = 0 end
+  local poll = assert(tonumber(config.poll), "nanite.poll is required")
+  local ejectTimeout = assert(tonumber(config.ejectTimeout), "nanite.ejectTimeout is required")
+  local supplyTimeout = assert(tonumber(config.supplyTimeout), "nanite.supplyTimeout is required")
+  local activeSignal = assert(config.activeSignal, "nanite.activeSignal is required")
+  local inactiveSignal = assert(config.inactiveSignal, "nanite.inactiveSignal is required")
 
   local function safeLog(level, message)
     pcall(self.log, level, message)

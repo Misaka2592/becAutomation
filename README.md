@@ -4,7 +4,7 @@
 
 本目录是一套可直接部署到 OpenComputers 电脑的 BEC 集成自动化程序。它负责读取物质约束场中的凝聚态流体、识别订单、配置麦克斯韦磁通门和 16 个观测节点、在处理期间预取下一单、空闲补货，并在运行中流体不足时进入带红石联锁的自动恢复或 `HALT` 状态。
 
-注意：使用前需按照提示修改对应文件中UUID配置。
+注意：使用前通过 `bec.conf` 或两个控制台编辑器填写现场地址、方向和路由候选设备。固定的运行参数、流体表和配方计数表保存在程序内。
 
 ## 运行效果
 
@@ -17,11 +17,12 @@
 | --- | --- | --- |
 | `bec_automation.lua` | 主程序和状态机 | 否 |
 | `bec_dashboard.lua` | 100x30 GPU 状态面板 | 否 |
-| `bec_automation_config.lua` | 机器、AE 接口、固定红石 I/O、流体目标和配方计数配置 | 是 |
+| `bec.conf` | 机器、AE 接口、固定红石 I/O、纳米硬件和路由候选设备配置 | 是 |
+| `essentials` | 安装版本、主配置版本和安装文件清单 | 由发布版本维护 |
 | `bec_nanite_transfer.lua` | 矿典存储总线纳米蜂群过滤、回收和供应状态机 | 否 |
 | `bec_route_mapper.lua` | 自动识别 19 种补货流体对应的红石 I/O 和方向 | 否 |
-| `bec_route_mapper_config.lua` | 路由映射器的 10 个候选红石 I/O | 是 |
-| `bec_fluid_routes.lua` | 路由映射器生成的“流体 -> 红石 I/O/方向”结果 | 自动生成 |
+| `bec.conf` 的 `routeMapper.*` | 路由映射器的 10 个候选红石 I/O | 是 |
+| `bec_fluid_routes.conf` | 路由映射器生成的“流体 -> 红石 I/O/方向”结果 | 自动生成 |
 | `bec_component_resolver.lua` | 主程序和路由映射器共用的组件地址解析模块 | 否 |
 | `bec_field_strength.lua` | 订单、预取和恢复路径共用的场强预留计算模块 | 否 |
 | `bec_counter.lua` | 已处理配方计数的双副本读写模块 | 否 |
@@ -96,7 +97,7 @@
 
 ### 空闲自动补货
 
-每种源流体在 `fluids` 中独立配置：
+程序内置 19 种源流体及其缓存目标、单位和校准流量。每项结构如下，修改这些值需要编辑 `bec_automation_config.lua`：
 
 ```lua
 {
@@ -114,7 +115,7 @@
 - `target`：期望保留的凝聚态缓存量，单位 MmB；`alignedCache` 会向下对齐到完整处理单位。
 - `outputPerSecond`：该路流体校准器实际每秒输出量，单位 mB/s。
 
-空闲补货只在没有订单、纠缠装置已经停止、且补货功能启用时执行。程序先逐流体打开相应路由，再打开自动补货缓存到纠缠装置的 AE 路径。19 种流体由 10 块红石 I/O 的上、下两面控制，其中 19 面对应流体，剩余一面留空并始终保持低电平。补货接口由独立红石 I/O 控制；当前现场地址是 `eb75eb2d-10b2-40d6-941c-5e0cc80a6ab3` 的东面。
+空闲补货只在没有订单、纠缠装置已经停止、且补货功能启用时执行。程序先逐流体打开相应路由，再打开自动补货缓存到纠缠装置的 AE 路径。19 种流体由 10 块红石 I/O 的上、下两面控制，其中 19 面对应流体，剩余一面留空并始终保持低电平。补货接口由独立红石 I/O 控制；组件地址和方向保存在外部 `bec.conf` 中，流体表和时序参数固定在程序内。
 
 ### 场强管理
 
@@ -201,9 +202,9 @@
 
 ### 纳米蜂群硬件
 
-`bec_automation_config.lua` 的 `nanite` 段需要填写：
+`bec.conf` 的 `nanite` 段需要填写：
 
-- `storageBusAddress` 和 `inputSide`：纳米物品存储总线及其矿典过滤方向；
+- `storageBusAddress` 和 `inputSide`：纳米物品存储总线及其矿典过滤方向；纳米链路固定启用。
 - `ejectRedstoneAddress` 和 `ejectSide`：连接收容总线弹出机构的独立红石 I/O；
 - `transposerAddress`、`targetSide`、`targetOutputSlot`：用于确认收容总线输出槽清空。
 
@@ -215,7 +216,7 @@
 
 ### 补货路由红石 I/O
 
-`bec_route_mapper_config.lua` 的 `redstoneAddresses` 填写 10 块专用红石 I/O。程序测试每块的 `down` 和 `up`，共 20 路：
+`bec.conf` 的 `routeMapper.redstoneAddresses` 填写 10 块专用红石 I/O。程序测试每块的 `down` 和 `up`，共 20 路：
 
 - 19 路分别控制 19 种源流体；
 - 剩余 1 路不接设备，路由文件将其记录为 `unusedOutput`，主程序不会驱动该面；
@@ -223,13 +224,13 @@
 - 19 个有效路由的高电平都必须只放行对应源流体；
 - 每路的流体校准器必须按 `outputPerSecond` 标定，并且只支持整秒输出粒度。
 
-`protectedControls` 会直接引用 `bec_automation_config.lua` 中的固定控制地址。它不是主程序的第二份控制配置，也不会写这些端口；路由映射器只读取并保护它们，发现固定控制 I/O 混入候选路由设备、端口不为低电平或组件缺失时会拒绝探测。迁移机器时先修改主配置，保护列表会自动跟随，无需再次抄 UUID。
+`protectedControls` 会直接引用 `bec.conf` 中的固定控制地址。它不是主程序的第二份控制配置，也不会写这些端口；路由映射器只读取并保护它们，发现固定控制 I/O 混入候选路由设备、端口不为低电平或组件缺失时会拒绝探测。迁移机器时先修改主配置，保护列表会自动跟随，无需再次抄 UUID。
 
 ## 安装与配置
 
-### 1. 复制程序
+### 1. 安装程序
 
-将本目录十一个 `.lua` 文件复制到 OC 电脑的 `/home`：
+将 `setup.lua` 单独放到 OC 电脑后直接运行即可；它内置远程仓库、分支和安装版本判断，并从远程 `essentials` 清单下载运行文件，不需要额外的安装配置文件。也可以手动将下面的运行文件复制到 `/home`：
 
 ```text
 /home/bec_automation.lua
@@ -243,9 +244,15 @@
 /home/bec_field_strength.lua
 /home/bec_counter.lua
 /home/bec_diagnostics.lua
+/home/bec_config.lua
+/home/bec_fluid_routes.conf
+/home/bec.conf
+/home/essentials
+/home/bec_config_edit.lua
+/home/bec_config_edit.py
 ```
 
-保留原文件名，因为程序使用 `require()` 按这些名称加载模块。
+保留原文件名，因为程序使用 `require()` 按这些名称加载模块。`essentials` 记录安装版本、主配置版本和本项目运行文件清单。安装器发现本地清单版本相同会跳过下载；发现安装器版本更新会按旧清单删除旧文件后重新安装。
 
 ### 2. 发现组件地址
 
@@ -260,7 +267,9 @@ bec_automation.lua discover
 
 ### 3. 编辑主配置
 
-编辑 `/home/bec_automation_config.lua`，至少核对下列字段：
+编辑 `/home/bec.conf`，两个编辑器都会先显示配置组，再逐字段显示变量名、中文名和值；可运行 `bec_config_edit.lua` 或 `bec_config_edit.py` 按提示逐项编辑：
+
+配置组使用 `[m/n] 名称<TAB>中文名`，表值继续显示 `[i/j] 变量名 | 中文名 | 当前值`，每个字段单独提示 `new value (Enter keeps current, !clear empties):`；嵌套表会递归显示到叶字段。
 
 | 配置位置 | 填写内容 |
 | --- | --- |
@@ -273,26 +282,18 @@ bec_automation.lua discover
 | `refill.cacheInterfaceAddress` | 自动补货流体缓存网络 ME 接口地址 |
 | `refill.entanglerAddress` / `entanglerToggleSide` | 自动补货到纠缠装置的 AE 路径总控 |
 | `refill.activityAddress` / `activitySide` | 纠缠装置活动信号输入 |
-| `nodes.addresses` | 可留空自动发现；同一 OC 网络有额外 BEC 节点时应显式填写 16 个地址 |
-| `nanite.enabled` | 是否启用矿典存储总线纳米蜂群链路；启用后必须填写下列纳米组件地址 |
+| `nanite` | 只填写纳米组件地址、方向和输出槽位；链路固定启用，运行参数保存在程序内 |
 | `nanite.storageBusAddress` / `inputSide` | 矿典存储总线地址和过滤方向 |
 | `nanite.ejectRedstoneAddress` / `ejectSide` | 独立蜂群回收红石 I/O 地址和方向 |
 | `nanite.transposerAddress` / `targetSide` / `targetOutputSlot` | 回收完成检测的 transposer 和槽位 |
 
-方向使用 `sides.east`、`sides.west`、`sides.north`、`sides.south`、`sides.up` 或 `sides.down`，并以红石 I/O 自身坐标方向为准。
+方向值使用 `east`、`west`、`north`、`south`、`up` 或 `down`；缺失或未知方向回退到 `sides.north`。
 
-然后逐项配置 `fluids`：
-
-- `target` 是目标缓存，不是单次补货量；
-- `outputPerSecond` 必须填写该路实测的每秒流量；
-- `source`、`condensate` 和 `unit` 除非整套配方/流体名变化，否则不要随意修改；
-- 若不需要空闲补货，将 `refill.enabled = false`。
-
-`orderCounting.recipeDivisors` 用于把物品原料数量换算为实际配方数。日志出现 `unknown recipe fingerprint` 或识别数量成倍错误时，应先确认订单完整稳定，再把日志中的指纹和正确除数写入该表。例如原料快照是实际 4 倍时，除数设为 `4`。
+节点数量、19 项流体、配方计数、自动化时序、安全开关、日志路径和补货启用状态均为程序内置值。若要调整这些值，需要修改 `bec_automation_config.lua` 并重新部署。
 
 ### 4. 配置并生成补货路由
 
-编辑 `/home/bec_route_mapper_config.lua`：
+路由映射器的现场配置位于 `/home/bec.conf` 的 `routeMapper.referenceInterfaceAddress`、`routeMapper.redstoneAddresses` 和 `routeMapper.testSides` 条目；探测信号、阈值、时序和输出文件名为程序内置值：
 
 1. 在 `redstoneAddresses` 填入 10 块补货专用红石 I/O 地址。
 2. `referenceInterfaceAddress` 填一个能够读到全部 19 种源流体名称的 ME 接口；该项目不必须，可直接使用物料原料网络接口。
@@ -311,7 +312,7 @@ bec_route_mapper.lua check
 bec_route_mapper.lua run 1
 ```
 
-映射器会逐路发出脉冲，比较自动补货缓存中新增的流体，并写入 `/home/bec_fluid_routes.lua`。运行期间不要手动向该缓存输入流体，也不要启动主自动化。
+映射器会逐路发出脉冲，比较自动补货缓存中新增的流体，并写入 `/home/bec_fluid_routes.conf`；`bec_fluid_routes.lua` 只负责加载该外部结果。运行期间不要手动向该缓存输入流体，也不要启动主自动化。
 
 完成后检查生成文件：
 
@@ -375,7 +376,7 @@ bec_automation.lua run
 
 ### `RECOVERING` 后仍进入 `HALT`
 
-`HALT` 会先尝试从自动补货网络提取当前短缺流体，然后持续读取约束场库存和活动节点剩余需求。依次检查：`refill.enabled` 是否开启、对应流体路由及每秒速率是否正确、自动补货缓存是否收到流体、`eb75.../east` 是否连接纠缠装置、纠缠活动输入是否变化、场强是否足够、麦克斯韦门过滤器是否对应本单，以及 HALT 外部电路是否真正暂停处理。补足缺失凝聚态后，只要节点仍保留有效的在制配方，程序会自动恢复；日志显示 `active node recipe state is unavailable` 时无法继续原配方，应人工检查节点状态后再决定是否重启。
+`HALT` 会先尝试从自动补货网络提取当前短缺流体，然后持续读取约束场库存和活动节点剩余需求。依次检查：补货链路是否固定启用、对应流体路由及每秒速率是否正确、自动补货缓存是否收到流体、`eb75.../east` 是否连接纠缠装置、纠缠活动输入是否变化、场强是否足够、麦克斯韦门过滤器是否对应本单，以及 HALT 外部电路是否真正暂停处理。补足缺失凝聚态后，只要节点仍保留有效的在制配方，程序会自动恢复；日志显示 `active node recipe state is unavailable` 时无法继续原配方，应人工检查节点状态后再决定是否重启。
 
 ### 麦克斯韦磁通门过滤器异常
 

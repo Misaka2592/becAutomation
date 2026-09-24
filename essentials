@@ -1,0 +1,20 @@
+# BEC-ESSENTIALS 1
+version=0.1.5-conf12
+configVersion=12
+file=essentials
+file=bec.conf
+file=bec_config.lua
+file=bec_automation.lua
+file=bec_automation_config.lua
+file=bec_component_resolver.lua
+file=bec_counter.lua
+file=bec_dashboard.lua
+file=bec_diagnostics.lua
+file=bec_field_strength.lua
+file=bec_fluid_routes.lua
+file=bec_fluid_routes.conf
+file=bec_nanite_transfer.lua
+file=bec_route_mapper.lua
+file=bec_route_mapper_config.lua
+file=bec_config_edit.lua
+file=bec_config_edit.py

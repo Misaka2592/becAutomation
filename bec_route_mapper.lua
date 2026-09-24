@@ -157,8 +157,8 @@ end
 
 local function validateAndBind()
   if config.schemaVersion ~= 1 then fail("unsupported bec_route_mapper_config schema") end
-  if type(config.expectedFluids) ~= "table" or #config.expectedFluids ~= 19 then
-    fail("expectedFluids must contain exactly 19 source fluid names")
+  if type(config.expectedFluids) ~= "table" or #config.expectedFluids == 0 then
+    fail("expectedFluids must contain at least one source fluid name")
   end
   if config.activeSignal == config.inactiveSignal then fail("active and inactive signals must differ") end
 
@@ -183,7 +183,9 @@ local function validateAndBind()
       }
     end
   end
-  if #outputs ~= 20 then fail("expected exactly 20 probe outputs, found " .. #outputs) end
+  if #outputs ~= #config.expectedFluids + 1 then
+    fail("expected one spare probe output in addition to each source fluid, found " .. #outputs)
+  end
 
   for _, protected in ipairs(config.protectedControls or {}) do
     local device = bind("redstone", protected.address, protected.label, { "getOutput" })
@@ -244,49 +246,54 @@ local function quote(value)
   return string.format("%q", tostring(value))
 end
 
+local function serialize(value)
+  if type(value) == "string" then return quote(value) end
+  if type(value) == "number" or type(value) == "boolean" then return tostring(value) end
+  if type(value) ~= "table" then return "nil" end
+  local keys = {}
+  for key in pairs(value) do keys[#keys + 1] = key end
+  table.sort(keys, function(a, b) return tostring(a) < tostring(b) end)
+  local parts = {}
+  for _, key in ipairs(keys) do
+    local field = type(key) == "number" and "[" .. tostring(key) .. "]" or "[" .. quote(key) .. "]"
+    parts[#parts + 1] = field .. " = " .. serialize(value[key])
+  end
+  return "{ " .. table.concat(parts, ", ") .. " }"
+end
+
+local function writeField(handle, name, label, value)
+  handle:write(name, "\t", label, "\t", serialize(value), "\n")
+end
+
 local function writeResult(path, complete, mapped, unresolved, unusedOutput)
   local handle, reason = io.open(path, "w")
   if not handle then fail("cannot write " .. path .. ": " .. tostring(reason)) end
-  handle:write("return {\n")
-  handle:write("  schemaVersion = 2,\n")
-  handle:write("  complete = ", tostring(complete), ",\n")
-  handle:write("  cacheInterfaceAddress = ", quote(cacheInterface.address), ",\n")
-  handle:write("  referenceInterfaceAddress = ", quote(referenceInterface.address), ",\n")
-  handle:write("  fluids = {\n")
+  handle:write("# BEC-CONFIG 1\n")
+  writeField(handle, "schemaVersion", "generated route schema", 2)
+  writeField(handle, "complete", "route map complete", complete)
+  writeField(handle, "cacheInterfaceAddress", "mapped cache interface", cacheInterface.address)
+  writeField(handle, "referenceInterfaceAddress", "mapped reference interface", referenceInterface.address)
+  local routes = {}
   for _, fluid in ipairs(config.expectedFluids) do
     local route = mapped[fluid]
     if route then
-      handle:write(string.format(
-        "    [%s] = { address = %s, side = %d, sideName = %s },\n",
-        quote(fluid),
-        quote(route.address),
-        route.side,
-        quote(route.sideName)
-      ))
+      routes[fluid] = { address = route.address, side = route.sideName, sideName = route.sideName }
     end
   end
-  handle:write("  },\n")
+  writeField(handle, "fluids", "mapped fluid routes", routes)
   if unusedOutput then
-    handle:write(string.format(
-      "  unusedOutput = { address = %s, side = %d, sideName = %s },\n",
-      quote(unusedOutput.address),
-      unusedOutput.side,
-      quote(unusedOutput.sideName)
-    ))
+    writeField(handle, "unusedOutput", "unused output", {
+      address = unusedOutput.address, side = unusedOutput.sideName, sideName = unusedOutput.sideName,
+    })
   end
-  handle:write("  unresolved = {\n")
+  local unresolvedOutput = {}
   for _, probe in ipairs(unresolved) do
-    handle:write(string.format(
-      "    { address = %s, side = %d, sideName = %s, reason = %s, observed = %s },\n",
-      quote(probe.address),
-      probe.side,
-      quote(probe.sideName),
-      quote(probe.reason),
-      quote(changeText(probe.cacheDelta))
-    ))
+    unresolvedOutput[#unresolvedOutput + 1] = {
+      address = probe.address, side = probe.sideName, sideName = probe.sideName,
+      reason = probe.reason, observed = changeText(probe.cacheDelta),
+    }
   end
-  handle:write("  },\n")
-  handle:write("}\n")
+  writeField(handle, "unresolved", "unresolved outputs", unresolvedOutput)
   handle:close()
 end
 
@@ -319,7 +326,7 @@ local function run()
   elseif not initialReference or not next(initialReference) then
     print("reference inventory is empty or unavailable; continuing with cache fluid deltas")
   end
-  print("probing 20 outputs; only one output is active at a time")
+  print("probing " .. #outputs .. " outputs; only one output is active at a time")
 
   local mapped = {}
   local unresolved = {}

@@ -1,4 +1,16 @@
-local sides = require("sides")
+local loaded, external = pcall(function()
+  return require("bec_config").load("bec.conf").automation
+end)
+if not loaded then
+  error("cannot load bec.conf: " .. tostring(external), 0)
+end
+if type(external) ~= "table" then error("bec.conf is missing the automation section", 0) end
+
+-- Only machine-specific wiring remains in bec.conf. The values below are
+-- fixed by the automation program and are intentionally not editable there.
+local redstone = external.redstone or {}
+local nanite = external.nanite or {}
+local refill = external.refill or {}
 
 local MiB = 1024 * 1024
 local function alignedCache(mebibytes, unit)
@@ -7,54 +19,36 @@ end
 
 return {
   schemaVersion = 12,
-  -- BEC机器地址。使用适配器连接（可用MFU避免机器正面被遮挡）
-  -- storageAddress  约束场
-  -- gateAddress     麦克斯韦磁通门
-  storageAddress = "d8ca9388-f160-4049-ac32-dbe1a755ae3a",
-  gateAddress = "da4ec6ec-b423-4da1-81e7-392fcb58ea04",
 
-  -- 原料发配网络缓存接口。使用适配器连接ME接口
-  cacheInterfaceAddress = "cc50170d-ff67-438c-97c0-87ddedd06c8e",
-  cacheInterfaceType = "me_interface",
+  storageAddress = external.storageAddress,
+  gateAddress = external.gateAddress,
+  cacheInterfaceAddress = external.cacheInterfaceAddress,
+  cacheInterfaceType = external.cacheInterfaceType,
 
-  -- 纠缠装置流体缓存与节点装配原料缓存。使用适配器连接ME接口
-  buffers = {
-    itemInterfaceAddress = "3261a6f1-6d7b-49ea-ae9e-edde7d457d50",
-    fluidInterfaceAddress = "97d546bd-922b-4225-9b63-85b82541d958",
-    interfaceType = "me_interface",
-  },
+  buffers = external.buffers,
 
   redstone = {
-    -- 独立红石IO端口
-    -- nodeAddress        输出。对应原料发配网络到节点装配原料缓存网络
-    -- generatorAddress   输出。对应原料发配网络到纠缠装置流体缓存网络
-    -- synthesisAddress   输出。当BEC正在处理配方时输出红石信号
-    nodeAddress = "325408ed-a882-45b9-85c7-0a44d3833fe8",
-    generatorAddress = "de4df182-4f5a-46a6-be77-626b26fd8bbc",
-    synthesisAddress = "096e685f-f580-4fbf-8a88-702b1a96cbe2",
-    -- 保护（HALT）状态红石输出，该输出连接到蜂群回收与观测阵列开关。当该信号为高时回收所有蜂群并停止观测阵列，保护当前配方不被销毁
-    haltAddress = "ae241cc3-ba80-4f6a-8ec3-afac1943157f",
-    -- 红石IO端口方向，可用常数为east/west/north/south
-    nodeToggleSide = sides.west,
-    generatorToggleSide = sides.west,
-    synthesisSide = sides.west,
-    haltSide = sides.west,
+    nodeAddress = redstone.nodeAddress,
+    generatorAddress = redstone.generatorAddress,
+    synthesisAddress = redstone.synthesisAddress,
+    haltAddress = redstone.haltAddress,
+    nodeToggleSide = redstone.nodeToggleSide,
+    generatorToggleSide = redstone.generatorToggleSide,
+    synthesisSide = redstone.synthesisSide,
+    haltSide = redstone.haltSide,
     connectSignal = 15,
     disconnectSignal = 0,
   },
 
-  -- 纳米蜂群转运。该链路使用一条 ME 存储总线矿典过滤、独立回收红石
-  -- 工作节点动态提供需求/供应等级；本链路使用一条 ME 存储总线、独立回收红石
-  -- I/O 和 transposer 槽位确认。
   nanite = {
     enabled = true,
-    storageBusAddress = "",
-    inputSide = sides.down,
-    ejectRedstoneAddress = "",
-    ejectSide = sides.west,
-    transposerAddress = "",
-    targetSide = sides.down,
-    targetOutputSlot = 3,
+    storageBusAddress = nanite.storageBusAddress,
+    inputSide = nanite.inputSide,
+    ejectRedstoneAddress = nanite.ejectRedstoneAddress,
+    ejectSide = nanite.ejectSide,
+    transposerAddress = nanite.transposerAddress,
+    targetSide = nanite.targetSide,
+    targetOutputSlot = nanite.targetOutputSlot,
     activeSignal = 15,
     inactiveSignal = 0,
     ejectTimeout = 10,
@@ -75,29 +69,25 @@ return {
     },
   },
 
-  -- 流体自动补充相关配置
   refill = {
-    -- 功能启用，设置为false禁用流体自动补充功能
     enabled = true,
-    routeModule = "bec_fluid_routes",
-    -- 流体自动补充缓存网络地址。使用适配器连接ME接口
-    cacheInterfaceAddress = "90f03a21-99ee-4611-9dee-b6d6848e2431",
-    cacheInterfaceType = "me_interface",
-    -- 流体自动补货缓存输出红石IO。有红石信号时通过触发总线将补货缓存网络连接至纠缠装置
-    entanglerAddress = "eb75eb2d-10b2-40d6-941c-5e0cc80a6ab3",
-    entanglerToggleSide = sides.east,
-    -- 纠缠装置活动指示输入红石IO。使用活跃探测盖板检测纠缠装置是否工作，工作中输出红石信号
-    activityAddress = "bd0a910a-69cb-4d69-a6c8-445135e89e97",
-    activitySide = sides.west,
+    routeModule = refill.routeModule,
+    cacheInterfaceAddress = refill.cacheInterfaceAddress,
+    cacheInterfaceType = refill.cacheInterfaceType,
+    entanglerAddress = refill.entanglerAddress,
+    entanglerToggleSide = refill.entanglerToggleSide,
+    activityAddress = refill.activityAddress,
+    activitySide = refill.activitySide,
     activityThreshold = 1,
     connectSignal = 15,
     disconnectSignal = 0,
     poll = 0.05,
     routeTimeout = 30,
-    -- 纠缠装置流体超时。若纠缠装置正在工作该超时计时器不生效
     conversionTimeout = 1800,
     checkInterval = 5,
     drainedWaitTimeout = 240,
+    pulseDuration = 1,
+    pulseInterval = 1,
   },
 
   ui = {
@@ -108,18 +98,12 @@ return {
     processedRecipeFile = "/home/bec_processed_recipes.dat",
   },
 
-  -- 观测节点配置
   nodes = {
-    -- 观测节点总数
     expectedCount = 16,
-    -- 每个观测节点最大并行数
     maxParallelPerNode = 64,
-    -- 观测节点OC地址。使用适配器连接，留空为自动发现
     addresses = {},
   },
 
-  -- 流体缓存数量配置。语义如下：
-  -- { source = <"输入流体名称">, condensate = <"凝聚态流体名称">, unit = <单次处理最小数量>, target = alignedCache(<缓存目标数量，单位M>, <单词最小处理数量>), outputPerSecond = <流体校准器每秒传输流量> }
   fluids = {
     { source = "molten.neutronium", condensate = "entangled_neutronium", unit = 144, target = alignedCache(128, 144), outputPerSecond = 2880000 },
     { source = "molten.cosmicneutronium", condensate = "entangled_cosmicneutronium", unit = 144, target = alignedCache(128, 144), outputPerSecond = 2880000 },
@@ -143,7 +127,6 @@ return {
   },
 
   orderCounting = {
-    -- 配方指纹与对应除数。用于处理自动并行配置
     fallbackDivisor = 1,
     recipeDivisors = {
       ["01f4a7e0"] = 2,
