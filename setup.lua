@@ -1,29 +1,31 @@
 local internet = require("internet")
 local filesystem = require("filesystem")
 
-local function loadSetup()
-  local handle, reason = io.open("setup.conf", "r")
-  if not handle then error("cannot open setup.conf: " .. tostring(reason), 0) end
-  local result = {}
-  local loader = loadstring or load
-  for line in handle:lines() do
-    local name, _, value = line:match("^([^\t]+)\t([^\t]*)\t(.*)$")
-    if name then
-      local chunk, compileReason = loader("return " .. value)
-      if not chunk then error("invalid setup.conf value: " .. tostring(compileReason), 0) end
-      result[name] = chunk()
-    end
-  end
-  handle:close()
-  return result
-end
+local repository = "Misaka2592/becAutomation"
+local branch = "experiment-configuration"
+local baseUrl = "https://raw.githubusercontent.com/" .. repository .. "/" .. branch .. "/"
+local destination = ... or "/home"
 
-local setup = loadSetup()
-local repository = setup.repository
-local branch = setup.branch
-local baseUrl = setup.baseUrl .. repository .. "/" .. branch .. "/"
-local destination = ... or setup.destination
-local files = setup.files
+-- Runtime files required by the automation. setup.lua is the bootstrap itself;
+-- documentation and development metadata are intentionally not downloaded.
+local files = {
+  "bec.conf",
+  "bec_config.lua",
+  "bec_automation.lua",
+  "bec_automation_config.lua",
+  "bec_component_resolver.lua",
+  "bec_counter.lua",
+  "bec_dashboard.lua",
+  "bec_diagnostics.lua",
+  "bec_field_strength.lua",
+  "bec_fluid_routes.lua",
+  "bec_fluid_routes.conf",
+  "bec_nanite_transfer.lua",
+  "bec_route_mapper.lua",
+  "bec_route_mapper_config.lua",
+  "bec_config_edit.lua",
+  "bec_config_edit.py",
+}
 
 local function download(relativePath, index)
   local targetPath = filesystem.concat(destination, relativePath)
