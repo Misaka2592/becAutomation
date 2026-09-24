@@ -267,7 +267,9 @@ bec_automation.lua discover
 
 ### 3. 编辑主配置
 
-编辑 `/home/bec.conf`，每行依次显示名称、原始标签和值；可运行 `bec_config_edit.lua` 顺序编辑，或运行 `bec_config_edit.py` 按编号/名称选择条目：
+编辑 `/home/bec.conf`，两个编辑器都会先显示配置组，再逐字段显示变量名、中文名和值；可运行 `bec_config_edit.lua` 或 `bec_config_edit.py` 按提示逐项编辑：
+
+配置组使用 `[m/n] 名称<TAB>中文名`，表值继续显示 `[i/j] 变量名 | 中文名 | 当前值`，每个字段单独提示 `new value (Enter keeps current, !clear empties):`；嵌套表会递归显示到叶字段。
 
 | 配置位置 | 填写内容 |
 | --- | --- |
