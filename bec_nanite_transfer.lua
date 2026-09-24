@@ -9,11 +9,6 @@ local function tierOf(value)
   return tier
 end
 
-local function sameTier(a, b)
-  local left, right = tierOf(a), tierOf(b)
-  return left ~= nil and right ~= nil and left == right
-end
-
 local function isNumber(value)
   return type(value) == "number" and value == value
 end
@@ -24,7 +19,10 @@ function M.new(options)
   local storageBus = assert(options.storageBus, "nanite controller requires storage bus")
   local ejectRedstone = assert(options.ejectRedstone, "nanite controller requires eject redstone")
   local transposer = assert(options.transposer, "nanite controller requires transposer")
-  local controllerNode = assert(options.controllerNode, "nanite controller requires controller node")
+  local controllerNodes = options.controllerNodes or {}
+  if type(controllerNodes) ~= "table" then
+    error("nanite controller requires a controller node list", 0)
+  end
 
   local setFilter = storageBus.setStorageOreFilter or storageBus.setStorage0reFilter
   if type(setFilter) ~= "function" then
@@ -40,7 +38,7 @@ function M.new(options)
     storageBus = storageBus,
     ejectRedstone = ejectRedstone,
     transposer = transposer,
-    controllerNode = controllerNode,
+    controllerNodes = {},
     setFilterMethod = setFilter,
     now = options.now or defaultNow,
     sleep = options.sleep or os.sleep,
@@ -106,18 +104,98 @@ function M.new(options)
     self.currentEject = value
   end
 
-  function self:_readRequired()
-    local ok, value = call(self.controllerNode.getRequiredTier)
-    if not ok then error("read nanite required tier: " .. value, 0) end
-    self.requiredTier = tierOf(value)
-    return value
+  local function nodeLabel(node, index)
+    return "control node " .. tostring(index) .. (node.address and (" (" .. node.address .. ")") or "")
   end
 
-  function self:_readProvided()
-    local ok, value = call(self.controllerNode.getProvidedTier)
-    if not ok then error("read nanite provided tier: " .. value, 0) end
-    self.providedTier = tierOf(value)
-    return value
+  local function readTier(node, index, method, label)
+    local ok, value = call(node[method])
+    if not ok then error("read " .. label .. " from " .. nodeLabel(node, index) .. ": " .. value, 0) end
+    local tier = tierOf(value)
+    if value ~= nil and tier == nil then
+      error("invalid " .. label .. " from " .. nodeLabel(node, index), 0)
+    end
+    return value, tier
+  end
+
+  function self:setControllerNodes(nodes)
+    if type(nodes) ~= "table" then error("nanite controller node list must be a table", 0) end
+    self.controllerNodes = {}
+    for index, node in ipairs(nodes) do
+      if type(node) ~= "table"
+          or type(node.getRequiredTier) ~= "function"
+          or type(node.getProvidedTier) ~= "function" then
+        error("invalid nanite control node at index " .. tostring(index), 0)
+      end
+      self.controllerNodes[#self.controllerNodes + 1] = node
+    end
+    self.lastRequirementChange = false
+    return true
+  end
+
+  function self:clearControllerNodes()
+    self.controllerNodes = {}
+    self.lastRequirementChange = false
+    self.requiredTier = nil
+    self.providedTier = nil
+    return true
+  end
+
+  self:setControllerNodes(controllerNodes)
+
+  function self:_readControllers()
+    local states = {}
+    self.requiredTier = nil
+    self.providedTier = nil
+    for index, node in ipairs(self.controllerNodes) do
+      local required, requiredTier = readTier(node, index, "getRequiredTier", "nanite required tier")
+      local provided, providedTier = readTier(node, index, "getProvidedTier", "nanite provided tier")
+      local state = {
+        node = node,
+        index = index,
+        required = required,
+        requiredTier = requiredTier,
+        provided = provided,
+        providedTier = providedTier,
+      }
+      states[#states + 1] = state
+      if requiredTier ~= nil and self.requiredTier == nil then self.requiredTier = requiredTier end
+      if providedTier ~= nil and self.providedTier == nil then self.providedTier = providedTier end
+    end
+    return states
+  end
+
+  local function activeStates(states)
+    local active = {}
+    for _, state in ipairs(states) do
+      if state.requiredTier ~= nil then active[#active + 1] = state end
+    end
+    return active
+  end
+
+  local function firstRequiredTier(states)
+    for _, state in ipairs(states) do
+      if state.requiredTier ~= nil then return state.requiredTier end
+    end
+    return nil
+  end
+
+  local function anyTierMatched(states)
+    for _, state in ipairs(states) do
+      if state.requiredTier ~= nil and state.requiredTier == state.providedTier then
+        return true, state.requiredTier
+      end
+    end
+    return false, nil
+  end
+
+  local function allTiersMismatch(states)
+    local active = activeStates(states)
+    if #active == 0 then return false end
+    for _, state in ipairs(active) do
+      if state.requiredTier == state.providedTier then return false end
+    end
+    return true
   end
 
   function self:_resetHardware()
@@ -261,29 +339,24 @@ function M.new(options)
     end
 
     if op.phase == "SUPPLY" then
-      local currentRequired = self:_readRequired()
-      local currentTier = tierOf(currentRequired)
-      if currentRequired == nil then
-        return self:_restartForRequirement(nil)
-      end
-      if currentTier == nil then
-        return self:_failure("invalid nanite requirement", "invalid_requirement")
-      end
-      if currentTier ~= op.targetTier then
-        return self:_restartForRequirement(currentTier)
-      end
-
-      local provided = self:_readProvided()
-      if sameTier(currentRequired, provided) then
+      local states = self:_readControllers()
+      local active = activeStates(states)
+      local matched, matchedTier = anyTierMatched(states)
+      if matched then
         self:_setFilter("null")
         self.op = nil
         self.stage = "IDLE"
         self.phase = "IDLE"
-        self.lastSuppliedTier = op.targetTier
+        self.lastSuppliedTier = matchedTier or op.targetTier
         self.lastError = nil
         self.lastErrorCode = nil
-        safeLog("INFO", "nanite tier " .. tostring(op.targetTier) .. " supplied")
+        safeLog("INFO", "nanite tier " .. tostring(self.lastSuppliedTier) .. " supplied")
         return true, "ready"
+      end
+      local currentTier = firstRequiredTier(states)
+      if #active == 0 then return self:_restartForRequirement(nil) end
+      if currentTier ~= op.targetTier then
+        return self:_restartForRequirement(currentTier)
       end
       if now > op.deadline then
         return self:_failure(string.format(
@@ -306,19 +379,27 @@ function M.new(options)
       return self:_tickOperation()
     end
 
-    local required = self:_readRequired()
-    local requiredTier = tierOf(required)
-    if required == nil then
+    local states = self:_readControllers()
+    local active = activeStates(states)
+    if #active == 0 then
       local ok, reason, code = self:_resetHardware()
       if not ok then return false, reason, code end
       return true, "idle"
     end
-    if requiredTier == nil then
-      return self:_failure("invalid nanite requirement", "invalid_requirement")
-    end
+    local requiredTier = firstRequiredTier(states)
     if not (self.config.oreByTier and type(self.config.oreByTier[requiredTier]) == "string"
         and self.config.oreByTier[requiredTier] ~= "") then
       return self:_failure("no nanite ore dictionary entry for tier " .. tostring(requiredTier), "unknown_tier")
+    end
+
+    local matched, matchedTier = anyTierMatched(states)
+    if matched and self.op then
+      if self.currentFilter ~= "null" then self:_setFilter("null") end
+      self.op = nil
+      self.stage = "IDLE"
+      self.phase = "IDLE"
+      self.lastSuppliedTier = matchedTier or requiredTier
+      return true, "ready"
     end
 
     if self.op then
@@ -330,16 +411,15 @@ function M.new(options)
       return self:_tickOperation()
     end
 
-    local provided = self:_readProvided()
-    if sameTier(required, provided) then
+    if matched then
       if self.currentFilter ~= "null" then self:_setFilter("null") end
       self.stage = "IDLE"
       self.phase = "IDLE"
-      self.lastSuppliedTier = requiredTier
+      self.lastSuppliedTier = matchedTier or requiredTier
       return true, "ready"
     end
 
-    self:_startReplacement(requiredTier)
+    if allTiersMismatch(states) then self:_startReplacement(requiredTier) end
     return nil, "pending"
   end
 
@@ -363,25 +443,24 @@ function M.new(options)
       return self:_failure("no nanite ore dictionary entry for tier " .. tostring(targetTier), "unknown_tier")
     end
 
-    local current = self:_readRequired()
-    local currentTier = tierOf(current)
-    if current == nil or currentTier ~= targetTier then
+    local states = self:_readControllers()
+    local active = activeStates(states)
+    local currentTier = firstRequiredTier(states)
+    local matched, matchedTier = anyTierMatched(states)
+    if matched then
+      if self.currentFilter ~= "null" then self:_setFilter("null") end
+      self.lastSuppliedTier = matchedTier or targetTier
+      self.lastError = nil
+      self.lastErrorCode = nil
+      return true
+    end
+    if #active == 0 or currentTier ~= targetTier then
       return self:_failure("nanite requirement changed before supply", "requirement_changed")
     end
 
     if self.op and (self.op.kind ~= "ensure" or self.op.targetTier ~= targetTier) then
       local ok, reason, code = self:reset()
       if not ok then return false, reason, code end
-    end
-    if not self.op then
-      local provided = self:_readProvided()
-      if sameTier(required, provided) then
-        if self.currentFilter ~= "null" then self:_setFilter("null") end
-        self.lastSuppliedTier = targetTier
-        self.lastError = nil
-        self.lastErrorCode = nil
-        return true
-      end
     end
     if not self.op then self:_startReplacement(targetTier) end
 
@@ -406,14 +485,16 @@ function M.new(options)
   function self:ensureCurrent(initial)
     local started = self:_now()
     while true do
-      local required = self:_readRequired()
-      if required == nil then
+      local states = self:_readControllers()
+      local active = activeStates(states)
+      if #active == 0 then
         if not initial then return self:reset() end
         if self:_now() - started > supplyTimeout then
           return self:_failure("nanite requirement did not become available", "timeout")
         end
         blockingSleep()
       else
+        local required = active[1].required
         local ok, reason, code = self:ensure(required)
         if ok then return true end
         if not (initial and code == "requirement_changed") then return false, reason, code end
@@ -448,8 +529,8 @@ function M.new(options)
     if not ok then return false, reason, code end
     if config.enableCache then
       if self.lastSuppliedTier == nil then return self:ejectCurrent() end
-      local provided = self:_readProvided()
-      if tierOf(provided) == self.lastSuppliedTier then return true end
+      local states = self:_readControllers()
+      if self.providedTier == self.lastSuppliedTier then return true end
     end
     return self:ejectCurrent()
   end
@@ -467,21 +548,35 @@ function M.new(options)
       providedTier = nil,
       requiredError = nil,
       providedError = nil,
+      controllerNodeCount = #self.controllerNodes,
+      matchedNodeCount = 0,
+      nodes = {},
       lastError = self.lastError,
       errorCode = self.lastErrorCode,
     }
 
-    local requiredOk, required = pcall(self.controllerNode.getRequiredTier)
-    if requiredOk then
-      status.requiredTier = tierOf(required)
-    else
-      status.requiredError = tostring(required)
-    end
-    local providedOk, provided = pcall(self.controllerNode.getProvidedTier)
-    if providedOk then
-      status.providedTier = tierOf(provided)
-    else
-      status.providedError = tostring(provided)
+    for index, node in ipairs(self.controllerNodes) do
+      local entry = { index = index, address = node.address, requiredTier = nil, providedTier = nil }
+      local requiredOk, required = pcall(node.getRequiredTier)
+      if requiredOk then
+        entry.requiredTier = tierOf(required)
+        if status.requiredTier == nil then status.requiredTier = entry.requiredTier end
+      else
+        entry.requiredError = tostring(required)
+        status.requiredError = status.requiredError or entry.requiredError
+      end
+      local providedOk, provided = pcall(node.getProvidedTier)
+      if providedOk then
+        entry.providedTier = tierOf(provided)
+        if status.providedTier == nil then status.providedTier = entry.providedTier end
+      else
+        entry.providedError = tostring(provided)
+        status.providedError = status.providedError or entry.providedError
+      end
+      if entry.requiredTier ~= nil and entry.requiredTier == entry.providedTier then
+        status.matchedNodeCount = status.matchedNodeCount + 1
+      end
+      status.nodes[#status.nodes + 1] = entry
     end
     return status
   end

@@ -6,7 +6,7 @@ local function alignedCache(mebibytes, unit)
 end
 
 return {
-  schemaVersion = 11,
+  schemaVersion = 12,
   -- BEC机器地址。使用适配器连接（可用MFU避免机器正面被遮挡）
   -- storageAddress  约束场
   -- gateAddress     麦克斯韦磁通门
@@ -44,10 +44,10 @@ return {
   },
 
   -- 纳米蜂群转运。该链路使用一条 ME 存储总线矿典过滤、独立回收红石
-  -- I/O 和 transposer 槽位确认；controllerNodeAddress 是全局需求/供应节点。
+  -- 工作节点动态提供需求/供应等级；本链路使用一条 ME 存储总线、独立回收红石
+  -- I/O 和 transposer 槽位确认。
   nanite = {
     enabled = true,
-    controllerNodeAddress = "",
     storageBusAddress = "",
     inputSide = sides.down,
     ejectRedstoneAddress = "",

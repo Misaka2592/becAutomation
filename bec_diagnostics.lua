@@ -51,7 +51,12 @@ function M.check(context)
   if context.naniteController then
     local naniteConfig = config.nanite
     local status = context.naniteController:getStatus()
-    output("  nanite-controller-node=" .. context.naniteControllerNode.address)
+    output("  nanite-controller-node-count=" .. tostring(status.controllerNodeCount or 0))
+    for _, node in ipairs(status.nodes or {}) do
+      output("  nanite-controller-node=" .. tostring(node.address)
+        .. " required-tier=" .. tostring(node.requiredTier)
+        .. " provided-tier=" .. tostring(node.providedTier))
+    end
     output("  nanite-storage-bus=" .. context.naniteStorageBus.address .. " side=" .. naniteConfig.inputSide)
     output("  nanite-eject-redstone=" .. context.naniteEjectRedstone.address .. " side=" .. naniteConfig.ejectSide)
     output("  nanite-eject-output=" .. tostring(checked(
@@ -61,6 +66,7 @@ function M.check(context)
       .. " slot=" .. naniteConfig.targetOutputSlot)
     output("  nanite-required-tier=" .. tostring(status.requiredTier))
     output("  nanite-provided-tier=" .. tostring(status.providedTier))
+    output("  nanite-matched-node-count=" .. tostring(status.matchedNodeCount or 0))
     output("  nanite-control-stage=" .. status.stage .. " commanded-filter=" .. status.filter)
     if status.requiredError or status.providedError then
       fail("cannot read nanite tier status: " .. tostring(status.requiredError or status.providedError))

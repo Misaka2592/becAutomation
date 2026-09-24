@@ -30,7 +30,6 @@ local refillActivityRedstone
 local naniteStorageBus
 local naniteEjectRedstone
 local naniteTransposer
-local naniteControllerNode
 local naniteController
 local refillRoutes = {}
 local routeConfig
@@ -175,7 +174,7 @@ local function bindOne(componentType, prefix, label, requiredMethods)
 end
 
 local function validateConfig()
-  if config.schemaVersion ~= 11 then
+  if config.schemaVersion ~= 12 then
     fail(
       "bec_automation_config.lua is outdated or does not match this program; "
         .. "copy the current config file together with bec_automation.lua"
@@ -212,7 +211,6 @@ local function validateConfig()
   local naniteConfig = config.nanite or {}
   if naniteConfig.enabled ~= false then
     for _, entry in ipairs({
-      { name = "nanite.controllerNodeAddress", value = naniteConfig.controllerNodeAddress },
       { name = "nanite.storageBusAddress", value = naniteConfig.storageBusAddress },
       { name = "nanite.ejectRedstoneAddress", value = naniteConfig.ejectRedstoneAddress },
       { name = "nanite.transposerAddress", value = naniteConfig.transposerAddress },
@@ -479,12 +477,6 @@ local function bindComponents()
       "nanite output transposer",
       { "getStackInSlot" }
     )
-    naniteControllerNode = bindOne(
-      "bec_io_node",
-      naniteConfig.controllerNodeAddress,
-      "nanite controller BEC I/O node",
-      { "getRequiredTier", "getProvidedTier" }
-    )
   end
   local fixedOutputs = {}
   for _, output in ipairs({
@@ -566,15 +558,10 @@ local function bindComponents()
   if #configured > 0 then
     for index, prefix in ipairs(configured) do
       addresses[index] = resolveAddress("bec_io_node", prefix, "BEC I/O node " .. index)
-      if naniteControllerNode and addresses[index] == naniteControllerNode.address then
-        fail("nanite controller BEC I/O node cannot also be a worker node")
-      end
     end
   else
     for address in component.list("bec_io_node", true) do
-      if not naniteControllerNode or address ~= naniteControllerNode.address then
-        addresses[#addresses + 1] = address
-      end
+      addresses[#addresses + 1] = address
     end
     table.sort(addresses)
   end
@@ -586,11 +573,16 @@ local function bindComponents()
   for index, address in ipairs(addresses) do
     if seen[address] then fail("duplicate BEC I/O node address " .. address) end
     seen[address] = true
-    nodes[index] = bindAddress(address, "bec_io_node", "BEC I/O node " .. index, {
+    local requiredMethods = {
       "getState", "getParallelRecipesInProgress", "getMaxParallel",
       "getRequiredCondensate", "getConsumedCondensate",
       "setMaxParallel", "setWorkAllowed", "isWorkAllowed",
-    })
+    }
+    if naniteStorageBus then
+      requiredMethods[#requiredMethods + 1] = "getRequiredTier"
+      requiredMethods[#requiredMethods + 1] = "getProvidedTier"
+    end
+    nodes[index] = bindAddress(address, "bec_io_node", "BEC I/O node " .. index, requiredMethods)
   end
 
   local filterCount = tonumber(checked("get filter count", gate.getCondensateFilterCount)) or 0
@@ -603,7 +595,7 @@ local function bindComponents()
       storageBus = naniteStorageBus,
       ejectRedstone = naniteEjectRedstone,
       transposer = naniteTransposer,
-      controllerNode = naniteControllerNode,
+      controllerNodes = {},
       now = now,
       log = log,
       isHalted = function() return haltInterlockActive end,
@@ -1383,6 +1375,32 @@ local function configureNodes(orderCount)
   log("INFO", string.format("order=%d nodes=%d max-parallel-per-node=%d", orderCount, #nodes, parallel))
   uiUpdate({ nodeMaxParallel = parallel })
   return parallel
+end
+
+local function setNaniteControllerNodes()
+  if not naniteController then return end
+  local activeNodes = {}
+  for index, node in ipairs(nodes) do
+    local maxParallel = tonumber(checked(
+      "read node " .. index .. " max parallel for nanite control",
+      node.getMaxParallel
+    )) or 0
+    if maxParallel > 0 then activeNodes[#activeNodes + 1] = node end
+  end
+  if #activeNodes == 0 then fail("no BEC nodes are configured for the active order") end
+  checked(
+    "set nanite controller nodes",
+    naniteController.setControllerNodes,
+    naniteController,
+    activeNodes
+  )
+  log("INFO", "nanite controller nodes=" .. tostring(#activeNodes))
+end
+
+local function clearNaniteControllerNodes()
+  if not naniteController then return end
+  checked("clear nanite controller nodes", naniteController.clearControllerNodes, naniteController)
+  log("INFO", "nanite controller nodes cleared")
 end
 
 local function configureGate(required)
@@ -2271,9 +2289,10 @@ local function processOrder(snapshot)
     configureGate(required)
     configureNodes(orderCount)
   end
+  setNaniteControllerNodes()
 
   -- Keep the BEC machines disabled while the item batch is staged and the
-  -- global nanite controller is supplied. The item pulse itself only moves
+  -- the current order's nanite control nodes are supplied. The item pulse only moves
   -- inventory into the node cache.
   setMachinesAllowed(false)
   pulseNodeOrderTransfer(fingerprint, snapshot.itemTotal)
@@ -2301,6 +2320,7 @@ local function processOrder(snapshot)
       haltForNaniteFailure(naniteReason, { idle = #nodes }, 0)
     end
   end
+  clearNaniteControllerNodes()
   if not nextSnapshot then setSynthesisActive(false) end
   if nextSnapshot then
     log("INFO", "item cache empty and all nodes idle; next-order fluids prefetched")
@@ -2367,6 +2387,7 @@ local function cleanup()
   if controlsArmed and naniteController then
     local ok, reason = naniteController:reset()
     if not ok then log("ERROR", "nanite cleanup failed: " .. tostring(reason)) end
+    pcall(clearNaniteControllerNodes)
   end
   if controlsArmed and nodeRedstone then
     pcall(setToggle, nodeRedstone, config.redstone.nodeToggleSide, "material/item-cache output", false)
@@ -2426,7 +2447,6 @@ local ok, reason = xpcall(function()
       naniteStorageBus = naniteStorageBus,
       naniteEjectRedstone = naniteEjectRedstone,
       naniteTransposer = naniteTransposer,
-      naniteControllerNode = naniteControllerNode,
       naniteController = naniteController,
       refillRoutes = refillRoutes,
       routeConfig = routeConfig,

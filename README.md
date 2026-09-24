@@ -65,11 +65,11 @@
 
 1. 将存储总线矿典过滤设置为 `null`，禁止继续输入；
 2. 输出回收红石高电平，轮询 transposer 的目标槽位直到清空；
-3. 将过滤切换为当前全局 `requiredTier` 对应的矿辞；
-4. 等待全局控制节点的 `providedTier` 精确匹配；
+3. 将过滤切换为当前运行节点 `requiredTier` 对应的矿辞；
+4. 等待任一控制节点的 `providedTier` 与 `requiredTier` 精确匹配；
 5. 供应完成后再次将矿辞设置为 `null`。
 
-`nodeTransferPulse` 仍然只负责订单物品从物料网络进入节点缓存。纳米链路由 `bec_nanite_transfer.lua` 独立管理。回收超时、供应超时、未知等级或组件调用失败都会保持矿辞关闭，并进入现有 HALT 联锁。
+`nodeTransferPulse` 仍然只负责订单物品从物料网络进入节点缓存。纳米链路由当前配方的运行节点动态控制，`bec_nanite_transfer.lua` 独立管理。只有当所有控制节点的 `requiredTier` 都与各自的 `providedTier` 不同时才开始更换蜂群；供应开始后任一节点匹配即视为本次供应完成。回收超时、供应超时、未知等级或组件调用失败都会保持矿辞关闭，并进入现有 HALT 联锁。
 
 ### 一单订单的处理顺序
 
@@ -203,10 +203,11 @@
 
 `bec_automation_config.lua` 的 `nanite` 段需要填写：
 
-- `controllerNodeAddress`：提供全局 `getRequiredTier()` / `getProvidedTier()` 的 BEC I/O Node；
 - `storageBusAddress` 和 `inputSide`：纳米物品存储总线及其矿典过滤方向；
 - `ejectRedstoneAddress` 和 `ejectSide`：连接收容总线弹出机构的独立红石 I/O；
 - `transposerAddress`、`targetSide`、`targetOutputSlot`：用于确认收容总线输出槽清空。
+
+启用纳米链路后，本轮配置为运行节点的 BEC I/O Node 必须提供 `getRequiredTier()` 和 `getProvidedTier()`；程序会在每轮配方开始前动态设置控制节点集合，并在配方结束后清空集合。
 
 凝聚态不足触发 HALT 时，程序先把纳米过滤设为 `null` 并保留现有 HALT 联锁；恢复时先保持麦克斯韦门和观测节点禁止工作，释放 HALT，再重新读取需求等级并供应蜂群，确认供应成功后才允许机器工作。纳米供应失败会重新进入 HALT。
 
@@ -274,7 +275,6 @@ bec_automation.lua discover
 | `refill.activityAddress` / `activitySide` | 纠缠装置活动信号输入 |
 | `nodes.addresses` | 可留空自动发现；同一 OC 网络有额外 BEC 节点时应显式填写 16 个地址 |
 | `nanite.enabled` | 是否启用矿典存储总线纳米蜂群链路；启用后必须填写下列纳米组件地址 |
-| `nanite.controllerNodeAddress` | 全局纳米需求/供应 BEC I/O Node 地址 |
 | `nanite.storageBusAddress` / `inputSide` | 矿典存储总线地址和过滤方向 |
 | `nanite.ejectRedstoneAddress` / `ejectSide` | 独立蜂群回收红石 I/O 地址和方向 |
 | `nanite.transposerAddress` / `targetSide` / `targetOutputSlot` | 回收完成检测的 transposer 和槽位 |
