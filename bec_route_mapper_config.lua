@@ -1,6 +1,7 @@
 local loaded, all = pcall(function() return require("bec_config").load("bec.conf") end)
 if not loaded then error("cannot load bec.conf: " .. tostring(all), 0) end
-local automation = all.automation or {}
+local automationLoaded, automation = pcall(require, "bec_automation_config")
+if not automationLoaded then error("cannot load bec_automation_config.lua: " .. tostring(automation), 0) end
 local source = all.routeMapper or {}
 local configSides = require("bec_config").sides
 
@@ -13,20 +14,28 @@ for _, entry in ipairs(source.testSides or {}) do
 end
 
 local result = {
-  schemaVersion = source.schemaVersion,
+  schemaVersion = 1,
   cacheInterfaceAddress = automation.refill and automation.refill.cacheInterfaceAddress,
   referenceInterfaceAddress = source.referenceInterfaceAddress,
   redstoneAddresses = source.redstoneAddresses,
   testSides = testSides,
   expectedFluids = expectedFluids,
-  allowNonEmptyCache = source.allowNonEmptyCache,
-  requireAllExpectedInReference = source.requireAllExpectedInReference,
-  activeSignal = source.activeSignal,
-  inactiveSignal = source.inactiveSignal,
-  minDetectedDelta = source.minDetectedDelta,
-  timings = source.timings,
-  outputFile = source.outputFile,
-  partialOutputFile = source.partialOutputFile,
+  allowNonEmptyCache = false,
+  requireAllExpectedInReference = false,
+  activeSignal = 15,
+  inactiveSignal = 0,
+  minDetectedDelta = 1,
+  timings = {
+    poll = 0.10,
+    stableFor = 0.75,
+    stableTimeout = 30,
+    probeTimeout = 20,
+    postOffDelay = 2,
+    statusInterval = 2,
+    recoveryTimeout = 10,
+  },
+  outputFile = "bec_fluid_routes.conf",
+  partialOutputFile = "bec_fluid_routes.partial.conf",
   protectedControls = {
     { label = "material/item-cache whole-batch output", address = automation.redstone.nodeAddress, side = automation.redstone.nodeToggleSide },
     { label = "material/fluid-cache whole-batch output", address = automation.redstone.generatorAddress, side = automation.redstone.generatorToggleSide },

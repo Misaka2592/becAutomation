@@ -1,6 +1,5 @@
 local configLoader = require("bec_config")
-local all = configLoader.load("bec.conf")
-local routePath = (all.routeMapper or {}).outputFile or "bec_fluid_routes.conf"
-local loaded, routes = pcall(function() return configLoader.load(routePath) end)
-if not loaded then error("cannot load " .. tostring(routePath) .. ": " .. tostring(routes), 0) end
+local routeConfig = require("bec_route_mapper_config")
+local loaded, routes = pcall(function() return configLoader.load(routeConfig.outputFile) end)
+if not loaded then error("cannot load " .. tostring(routeConfig.outputFile) .. ": " .. tostring(routes), 0) end
 return routes

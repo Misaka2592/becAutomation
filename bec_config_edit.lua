@@ -1,5 +1,18 @@
--- Console editor for the tab-separated BEC configuration format.
+-- Console editor for the tab-separated BEC hardware configuration format.
 local path = ... or "bec.conf"
+local editable = {
+  ["automation.storageAddress"] = true,
+  ["automation.gateAddress"] = true,
+  ["automation.cacheInterfaceAddress"] = true,
+  ["automation.cacheInterfaceType"] = true,
+  ["automation.buffers"] = true,
+  ["automation.redstone"] = true,
+  ["automation.nanite"] = true,
+  ["automation.refill"] = true,
+  ["routeMapper.referenceInterfaceAddress"] = true,
+  ["routeMapper.redstoneAddresses"] = true,
+  ["routeMapper.testSides"] = true,
+}
 
 local function readAll()
   local handle, reason = io.open(path, "r")
@@ -8,7 +21,9 @@ local function readAll()
   for line in handle:lines() do
     lines[#lines + 1] = line
     local name, label, value = line:match("^([^\t]+)\t([^\t]*)\t(.*)$")
-    if name then entries[#entries + 1] = { line = #lines, name = name, label = label, value = value } end
+    if name and editable[name] then
+      entries[#entries + 1] = { line = #lines, name = name, label = label, value = value }
+    end
   end
   handle:close()
   return lines, entries

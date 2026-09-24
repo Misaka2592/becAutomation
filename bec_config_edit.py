@@ -5,6 +5,21 @@ import os
 import sys
 
 
+EDITABLE = {
+    "automation.storageAddress",
+    "automation.gateAddress",
+    "automation.cacheInterfaceAddress",
+    "automation.cacheInterfaceType",
+    "automation.buffers",
+    "automation.redstone",
+    "automation.nanite",
+    "automation.refill",
+    "routeMapper.referenceInterfaceAddress",
+    "routeMapper.redstoneAddresses",
+    "routeMapper.testSides",
+}
+
+
 def _is_number(value: str) -> bool:
     try:
         float(value)
@@ -29,7 +44,8 @@ def load(path):
     entries = []
     for index, line in enumerate(lines):
         fields = line.rstrip("\r\n").split("\t", 2)
-        if len(fields) == 3 and not fields[0].lstrip().startswith("#"):
+        if (len(fields) == 3 and not fields[0].lstrip().startswith("#")
+                and fields[0] in EDITABLE):
             entries.append((index, fields[0], fields[1], fields[2]))
     return lines, entries
 
