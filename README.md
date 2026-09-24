@@ -18,6 +18,7 @@
 | `bec_automation.lua` | 主程序和状态机 | 否 |
 | `bec_dashboard.lua` | 100x30 GPU 状态面板 | 否 |
 | `bec.conf` | 机器、AE 接口、固定红石 I/O、流体目标和配方计数配置 | 是 |
+| `essentials` | 安装版本、主配置版本和安装文件清单 | 由发布版本维护 |
 | `bec_nanite_transfer.lua` | 矿典存储总线纳米蜂群过滤、回收和供应状态机 | 否 |
 | `bec_route_mapper.lua` | 自动识别 19 种补货流体对应的红石 I/O 和方向 | 否 |
 | `bec.conf` 的 `routeMapper.*` | 路由映射器的 10 个候选红石 I/O | 是 |
@@ -229,7 +230,7 @@
 
 ### 1. 安装程序
 
-将 `setup.lua` 单独放到 OC 电脑后直接运行即可；它内置远程仓库、分支和运行文件清单，不需要额外的安装配置文件。也可以手动将下面的运行文件复制到 `/home`：
+将 `setup.lua` 单独放到 OC 电脑后直接运行即可；它内置远程仓库、分支和安装版本判断，并从远程 `essentials` 清单下载运行文件，不需要额外的安装配置文件。也可以手动将下面的运行文件复制到 `/home`：
 
 ```text
 /home/bec_automation.lua
@@ -246,11 +247,12 @@
 /home/bec_config.lua
 /home/bec_fluid_routes.conf
 /home/bec.conf
+/home/essentials
 /home/bec_config_edit.lua
 /home/bec_config_edit.py
 ```
 
-保留原文件名，因为程序使用 `require()` 按这些名称加载模块。
+保留原文件名，因为程序使用 `require()` 按这些名称加载模块。`essentials` 记录安装版本、主配置版本和本项目运行文件清单。安装器发现本地清单版本相同会跳过下载；发现安装器版本更新会按旧清单删除旧文件后重新安装。
 
 ### 2. 发现组件地址
 
