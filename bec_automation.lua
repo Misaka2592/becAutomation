@@ -6,8 +6,6 @@ local fieldStrengthCalculator = require("bec_field_strength")
 local counterModule = require("bec_counter")
 local diagnostics = require("bec_diagnostics")
 
-local REFILL_PULSE_DURATION = 1
-local REFILL_PULSE_INTERVAL = 1
 
 local configOk, config = pcall(require, "bec_automation_config")
 if not configOk then
@@ -181,12 +179,11 @@ local function validateConfig()
     )
   end
   local uiConfig = config.ui or {}
-  if uiConfig.processedRecipeFile ~= nil
-      and (type(uiConfig.processedRecipeFile) ~= "string"
-        or trim(uiConfig.processedRecipeFile) == "") then
+  if type(uiConfig.processedRecipeFile) ~= "string"
+      or trim(uiConfig.processedRecipeFile) == "" then
     fail("ui.processedRecipeFile must be a non-empty path")
   end
-  processedRecipeFile = trim(uiConfig.processedRecipeFile or "/home/bec_processed_recipes.dat")
+  processedRecipeFile = trim(uiConfig.processedRecipeFile)
   recipeCounter = counterModule.new({
     path = processedRecipeFile,
     isInteger = isInteger,
@@ -305,6 +302,7 @@ local function validateConfig()
     for _, name in ipairs({
       "poll", "routeTimeout",
       "conversionTimeout", "checkInterval", "drainedWaitTimeout",
+      "pulseDuration", "pulseInterval",
     }) do
       if type(refill[name]) ~= "number" or refill[name] <= 0 then
         fail("refill." .. name .. " must be a positive number")
@@ -341,8 +339,8 @@ local function validateConfig()
     fail("nodes.maxParallelPerNode must be a positive integer")
   end
 
-  if type(config.fluids) ~= "table" or #config.fluids ~= 19 then
-    fail("config.fluids must contain exactly 19 entries")
+  if type(config.fluids) ~= "table" or #config.fluids == 0 then
+    fail("config.fluids must contain at least one entry")
   end
   baselineFieldStrength = 0
   for index, entry in ipairs(config.fluids) do
@@ -371,7 +369,7 @@ local function validateConfig()
     baselineFieldStrength = baselineFieldStrength + entry.target
   end
   if baselineFieldStrength == 0 and not ((config.safety or {}).allowZeroTargetStock) then
-    fail("all 19 fluid targets are zero; configure the production baseline before check/run")
+    fail("all configured fluid targets are zero; configure the production baseline before check/run")
   end
   baselineFieldStrength = math.max(1, baselineFieldStrength)
   refillFieldStrengthFloor = baselineFieldStrength
@@ -746,7 +744,7 @@ local function assertBaselineIsSafe(stored)
     else
       fail(string.format(
         "configured baseline field strength %s is below current condensate stock %s; "
-          .. "set all 19 targets correctly before running",
+          .. "set all configured targets correctly before running",
         formatInteger(baselineFieldStrength),
         formatInteger(currentTotal)
       ))
@@ -1078,7 +1076,7 @@ local function stageRefillFluid(entry, requiredAmount, options)
   ))
   local started = now()
   local allowedDuration = refill.routeTimeout
-    + estimatedPulses * (REFILL_PULSE_DURATION + REFILL_PULSE_INTERVAL)
+    + estimatedPulses * (config.refill.pulseDuration + config.refill.pulseInterval)
   local pulseCount = 0
   while current < target do
     if interruptForOrder and hasAnyOrderInput(readNetwork()) then return "order", current end
@@ -1099,7 +1097,7 @@ local function stageRefillFluid(entry, requiredAmount, options)
     setRefillSource(route, entry.source, true)
     local pulseStarted = now()
     local ok, state, observed = xpcall(function()
-      while now() - pulseStarted < REFILL_PULSE_DURATION do
+      while now() - pulseStarted < config.refill.pulseDuration do
         if interruptForOrder and hasAnyOrderInput(readNetwork()) then return "order", current end
         current = readRefillFluids()[entry.source] or 0
         os.sleep(refill.poll)
@@ -1118,16 +1116,17 @@ local function stageRefillFluid(entry, requiredAmount, options)
     if state == "order" then return state, observed end
 
     local intervalStarted = now()
-    while now() - intervalStarted < REFILL_PULSE_INTERVAL do
+    while now() - intervalStarted < config.refill.pulseInterval do
       if interruptForOrder and hasAnyOrderInput(readNetwork()) then return "order", observed end
       os.sleep(refill.poll)
     end
     current = readRefillFluids()[entry.source] or observed or 0
     local delta = math.max(0, current - beforePulse)
     log("INFO", string.format(
-      "refill pulse %s #%d: duration=1s current=%s delta=%s expected=%s",
+      "refill pulse %s #%d: duration=%.2fs current=%s delta=%s expected=%s",
       entry.source,
       pulseCount,
+      config.refill.pulseDuration,
       formatInteger(current),
       formatInteger(delta),
       formatInteger(entry.outputPerSecond)
